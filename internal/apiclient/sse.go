@@ -37,7 +37,11 @@ func (r *sseReader) next() (sseEvent, error) {
 		line := r.scanner.Text()
 
 		if line == "" {
-			if hasData {
+			// Dispatch on a blank line. Return the event if it carries data OR a
+			// type; a bare `event: <type>` frame (e.g. stream_end) is a real event
+			// and must be returned, not swallowed — otherwise its type would bleed
+			// onto whatever event comes next.
+			if hasData || ev.Type != "" {
 				ev.Data = strings.Join(dataLines, "\n")
 				return ev, nil
 			}
@@ -62,7 +66,7 @@ func (r *sseReader) next() (sseEvent, error) {
 	if err := r.scanner.Err(); err != nil {
 		return sseEvent{}, err
 	}
-	if hasData {
+	if hasData || ev.Type != "" {
 		ev.Data = strings.Join(dataLines, "\n")
 		return ev, nil
 	}

@@ -349,6 +349,11 @@ func (m *replModel) runCommand(cmd string) (tea.Model, tea.Cmd) {
 
 // startTurn kicks off the streaming ask; input is disabled until it completes.
 func (m *replModel) startTurn(query string) tea.Cmd {
+	// Cancel any still-running turn so its output/status/done frames can't
+	// interleave with the new one over the shared m.sub channel.
+	if m.cancel != nil {
+		m.cancel()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.streaming = true
@@ -407,11 +412,16 @@ func (m *replModel) newConversation() {
 }
 
 func (m *replModel) applySwitch(slug, name string) {
-	m.env.workspace = slug
+	// Persist first; only advance in-memory state if the save succeeds, so a
+	// failed write never leaves the session ahead of what's on disk.
+	prev := m.env.cfg.Workspace
 	m.env.cfg.Workspace = slug
 	if err := m.env.cfg.Save(); err != nil {
+		m.env.cfg.Workspace = prev
 		m.addEntry(entryError, "could not save config: "+err.Error())
+		return
 	}
+	m.env.workspace = slug
 	m.wsName = name
 	m.activePR = ""
 	m.newConversation()
@@ -584,14 +594,14 @@ func (m *replModel) refreshPicker() {
 	var b strings.Builder
 	b.WriteString(labelStyle.Render("Select a workspace") + "\n\n")
 	for i, w := range m.pickerItems {
-		name := w.Name
+		tag := ""
 		if w.IsDefault {
-			name += faintStyle.Render(" (default)")
+			tag = faintStyle.Render(" (default)")
 		}
 		if i == m.pickerIdx {
-			b.WriteString(selStyle.Render("❯ "+w.Name) + "  " + faintStyle.Render(w.Slug) + "\n")
+			b.WriteString(selStyle.Render("❯ "+w.Name) + tag + "  " + faintStyle.Render(w.Slug) + "\n")
 		} else {
-			b.WriteString("  " + name + "  " + faintStyle.Render(w.Slug) + "\n")
+			b.WriteString("  " + w.Name + tag + "  " + faintStyle.Render(w.Slug) + "\n")
 		}
 	}
 	b.WriteString("\n" + faintStyle.Render("↑/↓ select · enter confirm · esc cancel"))

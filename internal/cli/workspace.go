@@ -77,7 +77,9 @@ func runWorkspace(ctx context.Context, args []string) int {
 			r.Errorf("usage: abstr workspace use <slug|name>")
 			return exitUsage
 		}
-		target := sub[1]
+		// Join the remaining tokens so an unquoted multi-word name (e.g.
+		// `workspace use My Team`) still matches by name.
+		target := strings.Join(sub[1:], " ")
 		wss, err := client.Workspaces(ctx)
 		if err != nil {
 			r.Error(err.Error())
@@ -98,8 +100,10 @@ func runWorkspace(ctx context.Context, args []string) int {
 }
 
 func saveWorkspace(cfg *config.Config, r *render.Renderer, slug string) int {
+	prev := cfg.Workspace
 	cfg.Workspace = slug
 	if err := cfg.Save(); err != nil {
+		cfg.Workspace = prev // don't leave the config object ahead of disk
 		r.Error("save config: " + err.Error())
 		return exitRuntime
 	}
