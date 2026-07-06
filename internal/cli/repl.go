@@ -64,7 +64,7 @@ func runREPL(env *appEnv, initialPR string) int {
 	}
 	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
 
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Fprintln(env.render.Err, "abstr: "+err.Error())
 		return exitRuntime
 	}
@@ -158,6 +158,12 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		// Mouse wheel scrolls the transcript.
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
 
 	case statusMsg:
 		m.status = string(msg)
@@ -292,6 +298,8 @@ func (m *replModel) submit() (tea.Model, tea.Cmd) {
 	m.histIdx = len(m.history)
 	m.draft = ""
 	m.input.Reset()
+	// A fresh submission jumps to the latest, even if the user had scrolled up.
+	m.vp.GotoBottom()
 
 	if strings.HasPrefix(q, "/") {
 		return m.runCommand(q)
@@ -534,6 +542,10 @@ func (m *replModel) refresh() {
 	if !m.ready {
 		return
 	}
+	// Follow new content only when the user is already at the bottom; if they
+	// scrolled up to read earlier output, don't yank them back down.
+	stick := m.vp.AtBottom()
+
 	var b strings.Builder
 	for i, e := range m.entries {
 		if i > 0 {
@@ -550,7 +562,9 @@ func (m *replModel) refresh() {
 		}
 	}
 	m.vp.SetContent(b.String())
-	m.vp.GotoBottom()
+	if stick {
+		m.vp.GotoBottom()
+	}
 }
 
 func (m *replModel) renderEntry(e transcriptEntry) string {
@@ -613,7 +627,7 @@ func (m *replModel) View() string {
 		}
 		hint = faintStyle.Render("· " + s + "    (ctrl+c cancels)")
 	} else {
-		hint = faintStyle.Render("enter send · ↑↓ history · ctrl+c clear · ctrl+d quit · /help")
+		hint = faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · ctrl+c clear · ctrl+d quit")
 	}
 	// Status bar sits at the very bottom, below the input.
 	return m.vp.View() + "\n" + hint + "\n" + m.input.View() + "\n" + m.statusBar()
