@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
@@ -18,8 +19,14 @@ import (
 )
 
 // footerHeight is the number of lines reserved below the transcript viewport:
-// the context bar, a hint/status line, and the input line.
-const footerHeight = 3
+// a hint/status line, a rule, the input line, another rule, and the context bar.
+const footerHeight = 5
+
+// spinnerInterval is how often the in-transcript status line's spinner frame
+// and elapsed timer advance while a turn is streaming.
+const spinnerInterval = 100 * time.Millisecond
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 var (
 	userStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
@@ -78,6 +85,13 @@ type (
 	doneMsg   struct{ err error }
 )
 
+// tickMsg advances the in-transcript spinner/elapsed-timer while a turn streams.
+type tickMsg struct{}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
 // One-shot command results (not part of the m.sub stream).
 type (
 	nameResolvedMsg  struct{ name string }
@@ -132,10 +146,12 @@ type replModel struct {
 	sessionID string
 	activePR  string
 
-	streaming bool
-	answer    strings.Builder
-	status    string
-	cancel    context.CancelFunc
+	streaming   bool
+	answer      strings.Builder
+	status      string
+	cancel      context.CancelFunc
+	spinnerIdx  int
+	turnStarted time.Time
 
 	mode        replMode
 	pickerItems []apiclient.Workspace
@@ -165,8 +181,17 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
 
+	case tickMsg:
+		if !m.streaming {
+			return m, nil
+		}
+		m.spinnerIdx++
+		m.refresh()
+		return m, tickCmd()
+
 	case statusMsg:
 		m.status = string(msg)
+		m.refresh()
 		return m, waitForMsg(m.sub)
 	case deltaMsg:
 		m.answer.WriteString(string(msg))
@@ -210,6 +235,7 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cancel != nil {
 				m.cancel()
 			}
+			m.refresh()
 			return m, nil
 		}
 		m.input.Reset()
@@ -359,6 +385,8 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	m.streaming = true
 	m.answer.Reset()
 	m.status = "thinking…"
+	m.spinnerIdx = 0
+	m.turnStarted = time.Now()
 	m.input.Blur()
 	m.refresh()
 
@@ -377,7 +405,7 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 		})
 		sub <- doneMsg{err: err}
 	}()
-	return nil
+	return tickCmd()
 }
 
 func (m *replModel) finishTurn(err error) {
@@ -570,11 +598,27 @@ func (m *replModel) refresh() {
 			}
 			b.WriteString(strings.TrimRight(m.md.Render(m.answer.String()), "\n"))
 		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(m.spinnerLine())
 	}
 	m.vp.SetContent(b.String())
 	if stick {
 		m.vp.GotoBottom()
 	}
+}
+
+// spinnerLine renders the animated "<frame> <status> (<elapsed>s)" line shown
+// in the transcript, right under the latest message, while a turn streams.
+func (m *replModel) spinnerLine() string {
+	frame := spinnerFrames[m.spinnerIdx%len(spinnerFrames)]
+	status := m.status
+	if status == "" {
+		status = "working…"
+	}
+	elapsed := int(time.Since(m.turnStarted).Seconds())
+	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    ctrl+c cancels", frame, status, elapsed))
 }
 
 func (m *replModel) renderEntry(e transcriptEntry) string {
@@ -621,6 +665,11 @@ func (m *replModel) statusBar() string {
 	return labelStyle.Render("⬡ workspace ") + ws + labelStyle.Render("    ⎇ PR ") + pr
 }
 
+// rule draws a full-width horizontal divider framing the input box.
+func (m *replModel) rule() string {
+	return faintStyle.Render(strings.Repeat("─", m.width))
+}
+
 func (m *replModel) View() string {
 	if !m.ready {
 		return "loading…"
@@ -629,18 +678,12 @@ func (m *replModel) View() string {
 		return m.vp.View() + "\n" + faintStyle.Render("selecting workspace…") + "\n\n" + m.statusBar()
 	}
 
-	var hint string
-	if m.streaming {
-		s := m.status
-		if s == "" {
-			s = "working…"
-		}
-		hint = faintStyle.Render("· " + s + "    (ctrl+c cancels)")
-	} else {
-		hint = faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · ctrl+c clear · ctrl+d quit")
-	}
-	// Status bar sits at the very bottom, below the input.
-	return m.vp.View() + "\n" + hint + "\n" + m.input.View() + "\n" + m.statusBar()
+	// The animated status/spinner lives in the transcript itself (see
+	// spinnerLine), so this hint stays static regardless of streaming state.
+	hint := faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · ctrl+c clear · ctrl+d quit")
+	// Rules frame the input box, and the status bar sits at the very bottom.
+	rule := m.rule()
+	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
 }
 
 const replHelp = `commands:
