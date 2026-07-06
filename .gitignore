@@ -1,0 +1,7 @@
+# Build output
+/abstr
+/dist/
+
+# Local env
+*.local
+.DS_Store

@@ -1,0 +1,652 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/abstraction-dev/cli/internal/apiclient"
+	"github.com/abstraction-dev/cli/internal/render"
+	"github.com/abstraction-dev/cli/internal/uuidutil"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// footerHeight is the number of lines reserved below the transcript viewport:
+// the context bar, a hint/status line, and the input line.
+const footerHeight = 3
+
+var (
+	userStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	faintStyle = lipgloss.NewStyle().Faint(true)
+	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	labelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+	selStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+)
+
+// escLeakPattern matches terminal capability-query RESPONSES (OSC 10/11 color
+// reports, cursor-position and device-attribute reports). Some terminals answer
+// these queries right as a program acquires the terminal, and with older
+// input parsers the response can leak into the text input. We strip any such
+// fragment defensively so it never corrupts a query or command.
+var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[cuR]`)
+
+// runREPL launches the interactive session as a full-screen TUI: an alt-screen
+// transcript (ANSI markdown) above a context bar and prompt. Ctrl+C cancels the
+// in-flight question (or clears the input); Ctrl+D or /exit quits. Up/Down
+// navigate an in-memory history for this run.
+func runREPL(env *appEnv, initialPR string) int {
+	sessionID, _ := uuidutil.New()
+
+	// Detect the terminal background ONCE, before the full-screen program takes
+	// over — querying it later would leak the response into the input.
+	md := render.NewMDRenderer(render.HasDarkBackground(), 0)
+
+	ti := textinput.New()
+	ti.Prompt = "❯ "
+	ti.PromptStyle = userStyle
+	ti.Placeholder = "Ask Astrid…  (/help, /exit)"
+	ti.Focus()
+	ti.CharLimit = 8192
+
+	m := &replModel{
+		env:       env,
+		sub:       make(chan tea.Msg, 256),
+		md:        md,
+		input:     ti,
+		sessionID: sessionID,
+		activePR:  initialPR,
+	}
+	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
+
+	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+		fmt.Fprintln(env.render.Err, "abstr: "+err.Error())
+		return exitRuntime
+	}
+	return exitOK
+}
+
+// Messages delivered over m.sub by the ask goroutine.
+type (
+	deltaMsg  string
+	statusMsg string
+	doneMsg   struct{ err error }
+)
+
+// One-shot command results (not part of the m.sub stream).
+type (
+	nameResolvedMsg  struct{ name string }
+	pickerLoadedMsg  struct {
+		items []apiclient.Workspace
+		err   error
+	}
+	switchResultMsg struct {
+		slug, name string
+		err        error
+	}
+)
+
+type replMode int
+
+const (
+	modeNormal replMode = iota
+	modePicking
+)
+
+type entryKind int
+
+const (
+	entryUser entryKind = iota
+	entryAnswer
+	entrySystem
+	entryError
+)
+
+type transcriptEntry struct {
+	kind entryKind
+	text string
+}
+
+type replModel struct {
+	env *appEnv
+	sub chan tea.Msg
+	md  *render.MDRenderer
+
+	vp    viewport.Model
+	input textinput.Model
+	ready bool
+	width int
+
+	entries []transcriptEntry
+	wsName  string // resolved friendly name of the current workspace
+
+	history []string
+	histIdx int
+	draft   string
+
+	sessionID string
+	activePR  string
+
+	streaming bool
+	answer    strings.Builder
+	status    string
+	cancel    context.CancelFunc
+
+	mode        replMode
+	pickerItems []apiclient.Workspace
+	pickerIdx   int
+}
+
+func waitForMsg(sub chan tea.Msg) tea.Cmd {
+	return func() tea.Msg { return <-sub }
+}
+
+func (m *replModel) Init() tea.Cmd {
+	return tea.Batch(textinput.Blink, waitForMsg(m.sub), m.resolveCurrentNameCmd())
+}
+
+func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.resize(msg.Width, msg.Height)
+		return m, nil
+
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+
+	case statusMsg:
+		m.status = string(msg)
+		return m, waitForMsg(m.sub)
+	case deltaMsg:
+		m.answer.WriteString(string(msg))
+		m.refresh()
+		return m, waitForMsg(m.sub)
+	case doneMsg:
+		m.finishTurn(msg.err)
+		return m, waitForMsg(m.sub)
+
+	case nameResolvedMsg:
+		if msg.name != "" {
+			m.wsName = msg.name
+		}
+		return m, nil
+	case pickerLoadedMsg:
+		m.openPicker(msg)
+		return m, nil
+	case switchResultMsg:
+		if msg.err != nil {
+			m.addEntry(entryError, msg.err.Error())
+		} else {
+			m.applySwitch(msg.slug, msg.name)
+		}
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modePicking {
+		return m.handlePickerKey(key)
+	}
+
+	switch key.Type {
+	case tea.KeyCtrlC:
+		if m.streaming {
+			m.status = "cancelling…"
+			if m.cancel != nil {
+				m.cancel()
+			}
+			return m, nil
+		}
+		m.input.Reset()
+		m.histIdx = len(m.history)
+		return m, nil
+
+	case tea.KeyCtrlD:
+		if !m.streaming && m.input.Value() == "" {
+			return m, tea.Quit
+		}
+		return m, nil
+
+	case tea.KeyEnter:
+		if m.streaming {
+			return m, nil
+		}
+		return m.submit()
+
+	case tea.KeyUp:
+		if !m.streaming {
+			m.historyPrev()
+		}
+		return m, nil
+	case tea.KeyDown:
+		if !m.streaming {
+			m.historyNext()
+		}
+		return m, nil
+
+	case tea.KeyPgUp, tea.KeyPgDown:
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(key)
+		return m, cmd
+	}
+
+	// While the agent is responding the input is disabled.
+	if m.streaming {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(key)
+	m.sanitizeInput()
+	return m, cmd
+}
+
+// sanitizeInput strips any leaked terminal-response fragment from the input.
+func (m *replModel) sanitizeInput() {
+	v := m.input.Value()
+	if cleaned := escLeakPattern.ReplaceAllString(v, ""); cleaned != v {
+		m.input.SetValue(cleaned)
+		m.input.CursorEnd()
+	}
+}
+
+func (m *replModel) handlePickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.Type {
+	case tea.KeyUp:
+		if m.pickerIdx > 0 {
+			m.pickerIdx--
+			m.refreshPicker()
+		}
+	case tea.KeyDown:
+		if m.pickerIdx < len(m.pickerItems)-1 {
+			m.pickerIdx++
+			m.refreshPicker()
+		}
+	case tea.KeyEnter:
+		w := m.pickerItems[m.pickerIdx]
+		m.mode = modeNormal
+		m.input.Focus()
+		m.applySwitch(w.Slug, w.Name)
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.mode = modeNormal
+		m.input.Focus()
+		m.addEntry(entrySystem, "workspace selection cancelled")
+	}
+	return m, nil
+}
+
+func (m *replModel) submit() (tea.Model, tea.Cmd) {
+	q := strings.TrimSpace(escLeakPattern.ReplaceAllString(m.input.Value(), ""))
+	if q == "" {
+		return m, nil
+	}
+	m.history = append(m.history, q)
+	m.histIdx = len(m.history)
+	m.draft = ""
+	m.input.Reset()
+
+	if strings.HasPrefix(q, "/") {
+		return m.runCommand(q)
+	}
+	m.addEntry(entryUser, q)
+	return m, m.startTurn(q)
+}
+
+func (m *replModel) runCommand(cmd string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(cmd)
+	switch fields[0] {
+	case "/exit", "/quit":
+		return m, tea.Quit
+	case "/help":
+		m.addEntry(entrySystem, replHelp)
+	case "/new", "/reset":
+		m.newConversation()
+		m.addEntry(entrySystem, "started a new conversation")
+	case "/pr":
+		switch {
+		case len(fields) < 2:
+			if m.activePR == "" {
+				m.addEntry(entrySystem, "no PR scope set — use `/pr <url|number>`")
+			} else {
+				m.addEntry(entrySystem, "PR scope: "+m.activePR)
+			}
+			return m, nil // reporting only — keep the conversation
+		case fields[1] == "clear":
+			m.activePR = ""
+			m.newConversation()
+			m.addEntry(entrySystem, "PR scope cleared")
+		default:
+			m.activePR = fields[1]
+			m.newConversation()
+			m.addEntry(entrySystem, "PR scope set: "+m.activePR)
+		}
+	case "/workspace", "/ws":
+		if len(fields) >= 2 {
+			return m, m.switchWorkspaceCmd(fields[1]) // validate + switch
+		}
+		return m, m.loadPickerCmd() // open picker
+	default:
+		m.addEntry(entrySystem, "unknown command: "+fields[0]+" (try /help)")
+	}
+	return m, nil
+}
+
+// startTurn kicks off the streaming ask; input is disabled until it completes.
+func (m *replModel) startTurn(query string) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.streaming = true
+	m.answer.Reset()
+	m.status = "thinking…"
+	m.input.Blur()
+	m.refresh()
+
+	req := apiclient.AskRequest{
+		Workspace: m.env.workspace,
+		Question:  query,
+		PR:        m.activePR,
+		SessionID: m.sessionID,
+	}
+	sub := m.sub
+	client := m.env.client
+	go func() {
+		err := client.AskStream(ctx, req, apiclient.StreamHandlers{
+			OnOutput: func(t string) { sub <- deltaMsg(t) },
+			OnStatus: func(s string) { sub <- statusMsg(s) },
+		})
+		sub <- doneMsg{err: err}
+	}()
+	return nil
+}
+
+func (m *replModel) finishTurn(err error) {
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.streaming = false
+	m.status = ""
+
+	if ans := m.answer.String(); strings.TrimSpace(ans) != "" {
+		m.entries = append(m.entries, transcriptEntry{entryAnswer, ans})
+	}
+	switch {
+	case err != nil && isCanceled(err):
+		m.entries = append(m.entries, transcriptEntry{entrySystem, "(cancelled)"})
+	case err != nil:
+		m.entries = append(m.entries, transcriptEntry{entryError, err.Error()})
+	}
+	m.answer.Reset()
+	m.input.Focus()
+	m.refresh()
+}
+
+// newConversation resets the session id and flushes the transcript.
+func (m *replModel) newConversation() {
+	if id, err := uuidutil.New(); err == nil {
+		m.sessionID = id
+	}
+	m.entries = nil
+	m.refresh()
+}
+
+func (m *replModel) applySwitch(slug, name string) {
+	m.env.workspace = slug
+	m.env.cfg.Workspace = slug
+	if err := m.env.cfg.Save(); err != nil {
+		m.addEntry(entryError, "could not save config: "+err.Error())
+	}
+	m.wsName = name
+	m.activePR = ""
+	m.newConversation()
+	m.addEntry(entrySystem, "switched to workspace "+workspaceLabel(name, slug))
+}
+
+func (m *replModel) openPicker(msg pickerLoadedMsg) {
+	if msg.err != nil {
+		m.addEntry(entryError, msg.err.Error())
+		return
+	}
+	if len(msg.items) == 0 {
+		m.addEntry(entrySystem, "no workspaces found for this account")
+		return
+	}
+	m.mode = modePicking
+	m.pickerItems = msg.items
+	m.pickerIdx = 0
+	for i, w := range msg.items {
+		if w.Slug == m.env.workspace {
+			m.pickerIdx = i
+			break
+		}
+	}
+	m.input.Blur()
+	m.refreshPicker()
+}
+
+// --- async command Cmds ---
+
+func (m *replModel) resolveCurrentNameCmd() tea.Cmd {
+	client, slug := m.env.client, m.env.workspace
+	return func() tea.Msg {
+		items, err := client.Workspaces(context.Background())
+		if err != nil {
+			return nameResolvedMsg{}
+		}
+		for _, w := range items {
+			if w.Slug == slug {
+				return nameResolvedMsg{name: w.Name}
+			}
+		}
+		return nameResolvedMsg{}
+	}
+}
+
+func (m *replModel) loadPickerCmd() tea.Cmd {
+	client := m.env.client
+	return func() tea.Msg {
+		items, err := client.Workspaces(context.Background())
+		return pickerLoadedMsg{items: items, err: err}
+	}
+}
+
+func (m *replModel) switchWorkspaceCmd(target string) tea.Cmd {
+	client := m.env.client
+	return func() tea.Msg {
+		items, err := client.Workspaces(context.Background())
+		if err != nil {
+			return switchResultMsg{err: err}
+		}
+		for _, w := range items {
+			if w.Slug == target || strings.EqualFold(w.Name, target) {
+				return switchResultMsg{slug: w.Slug, name: w.Name}
+			}
+		}
+		return switchResultMsg{err: fmt.Errorf("no accessible workspace matching %q", target)}
+	}
+}
+
+// --- history ---
+
+func (m *replModel) historyPrev() {
+	if len(m.history) == 0 || m.histIdx == 0 {
+		return
+	}
+	if m.histIdx == len(m.history) {
+		m.draft = m.input.Value()
+	}
+	m.histIdx--
+	m.input.SetValue(m.history[m.histIdx])
+	m.input.CursorEnd()
+}
+
+func (m *replModel) historyNext() {
+	if m.histIdx >= len(m.history) {
+		return
+	}
+	m.histIdx++
+	if m.histIdx == len(m.history) {
+		m.input.SetValue(m.draft)
+	} else {
+		m.input.SetValue(m.history[m.histIdx])
+	}
+	m.input.CursorEnd()
+}
+
+// --- rendering ---
+
+func (m *replModel) resize(w, h int) {
+	m.width = w
+	vpHeight := h - footerHeight
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	if !m.ready {
+		m.vp = viewport.New(w, vpHeight)
+		m.ready = true
+	} else {
+		m.vp.Width = w
+		m.vp.Height = vpHeight
+	}
+	m.input.Width = w - 4
+	m.md.Resize(w - 2)
+	if m.mode == modePicking {
+		m.refreshPicker()
+	} else {
+		m.refresh()
+	}
+}
+
+func (m *replModel) addEntry(kind entryKind, text string) {
+	m.entries = append(m.entries, transcriptEntry{kind, text})
+	m.refresh()
+}
+
+func (m *replModel) refresh() {
+	if !m.ready {
+		return
+	}
+	var b strings.Builder
+	for i, e := range m.entries {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(m.renderEntry(e))
+	}
+	if m.streaming {
+		if live := strings.TrimSpace(m.answer.String()); live != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(strings.TrimRight(m.md.Render(m.answer.String()), "\n"))
+		}
+	}
+	m.vp.SetContent(b.String())
+	m.vp.GotoBottom()
+}
+
+func (m *replModel) renderEntry(e transcriptEntry) string {
+	switch e.kind {
+	case entryUser:
+		return userStyle.Render("❯ " + e.text)
+	case entryAnswer:
+		return strings.TrimRight(m.md.Render(e.text), "\n")
+	case entryError:
+		return errStyle.Render("error: " + e.text)
+	default:
+		return faintStyle.Render(e.text)
+	}
+}
+
+func (m *replModel) refreshPicker() {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("Select a workspace") + "\n\n")
+	for i, w := range m.pickerItems {
+		name := w.Name
+		if w.IsDefault {
+			name += faintStyle.Render(" (default)")
+		}
+		if i == m.pickerIdx {
+			b.WriteString(selStyle.Render("❯ "+w.Name) + "  " + faintStyle.Render(w.Slug) + "\n")
+		} else {
+			b.WriteString("  " + name + "  " + faintStyle.Render(w.Slug) + "\n")
+		}
+	}
+	b.WriteString("\n" + faintStyle.Render("↑/↓ select · enter confirm · esc cancel"))
+	m.vp.SetContent(b.String())
+	m.vp.GotoTop()
+}
+
+func (m *replModel) statusBar() string {
+	ws := m.wsName
+	if ws == "" {
+		ws = shortSlug(m.env.workspace)
+	}
+	pr := m.activePR
+	if pr == "" {
+		pr = "—"
+	}
+	return labelStyle.Render("⬡ workspace ") + ws + labelStyle.Render("    ⎇ PR ") + pr
+}
+
+func (m *replModel) View() string {
+	if !m.ready {
+		return "loading…"
+	}
+	if m.mode == modePicking {
+		return m.vp.View() + "\n" + faintStyle.Render("selecting workspace…") + "\n\n" + m.statusBar()
+	}
+
+	var hint string
+	if m.streaming {
+		s := m.status
+		if s == "" {
+			s = "working…"
+		}
+		hint = faintStyle.Render("· " + s + "    (ctrl+c cancels)")
+	} else {
+		hint = faintStyle.Render("enter send · ↑↓ history · ctrl+c clear · ctrl+d quit · /help")
+	}
+	// Status bar sits at the very bottom, below the input.
+	return m.vp.View() + "\n" + hint + "\n" + m.input.View() + "\n" + m.statusBar()
+}
+
+const replHelp = `commands:
+  /pr <url|number>   scope the conversation to a pull request's diff report
+  /pr clear          remove the PR scope
+  /workspace [slug]  switch workspace (no arg = picker; validates access)
+  /new               start a fresh conversation
+  /help              show this help
+  /exit              quit (or press ctrl+d)`
+
+func workspaceLabel(name, slug string) string {
+	if name == "" {
+		return slug
+	}
+	return name + " (" + shortSlug(slug) + ")"
+}
+
+func shortSlug(slug string) string {
+	if len(slug) <= 8 {
+		return slug
+	}
+	return slug[:8] + "…"
+}
+
+func isCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return strings.Contains(err.Error(), "context canceled")
+}
