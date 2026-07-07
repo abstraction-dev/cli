@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,14 +95,23 @@ func tickCmd() tea.Cmd {
 
 // One-shot command results (not part of the m.sub stream).
 type (
-	nameResolvedMsg  struct{ name string }
-	pickerLoadedMsg  struct {
+	nameResolvedMsg struct{ name string }
+	pickerLoadedMsg struct {
 		items []apiclient.Workspace
 		err   error
 	}
 	switchResultMsg struct {
 		slug, name string
 		err        error
+	}
+	prPickerLoadedMsg struct {
+		items []apiclient.PRReview
+		err   error
+	}
+	prSetResultMsg struct {
+		pr    string // value stored as the scope (the PR's URL)
+		label string // friendly label for the transcript
+		err   error
 	}
 )
 
@@ -110,6 +120,7 @@ type replMode int
 const (
 	modeNormal replMode = iota
 	modePicking
+	modePickingPR
 )
 
 type entryKind int
@@ -156,6 +167,8 @@ type replModel struct {
 	mode        replMode
 	pickerItems []apiclient.Workspace
 	pickerIdx   int
+	prItems     []apiclient.PRReview
+	prIdx       int
 }
 
 func waitForMsg(sub chan tea.Msg) tea.Cmd {
@@ -216,6 +229,16 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applySwitch(msg.slug, msg.name)
 		}
 		return m, nil
+	case prPickerLoadedMsg:
+		m.openPRPicker(msg)
+		return m, nil
+	case prSetResultMsg:
+		if msg.err != nil {
+			m.addEntry(entryError, msg.err.Error())
+		} else {
+			m.applyPRScope(msg.pr, msg.label)
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -224,8 +247,11 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.mode == modePicking {
+	switch m.mode {
+	case modePicking:
 		return m.handlePickerKey(key)
+	case modePickingPR:
+		return m.handlePRPickerKey(key)
 	}
 
 	switch key.Type {
@@ -315,6 +341,35 @@ func (m *replModel) handlePickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *replModel) handlePRPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.Type {
+	case tea.KeyUp:
+		if m.prIdx > 0 {
+			m.prIdx--
+			m.refreshPRPicker()
+		}
+	case tea.KeyDown:
+		if m.prIdx < len(m.prItems)-1 {
+			m.prIdx++
+			m.refreshPRPicker()
+		}
+	case tea.KeyEnter:
+		pr := m.prItems[m.prIdx]
+		m.mode = modeNormal
+		m.input.Focus()
+		if !pr.Ready() {
+			m.addEntry(entrySystem, fmt.Sprintf("PR #%d is not ready yet (%s) — pick a completed review", pr.PRNumber, prStatusLabel(pr.Status)))
+			return m, nil
+		}
+		m.applyPRScope(pr.PRURL, prLabel(pr))
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.mode = modeNormal
+		m.input.Focus()
+		m.addEntry(entrySystem, "PR selection cancelled")
+	}
+	return m, nil
+}
+
 func (m *replModel) submit() (tea.Model, tea.Cmd) {
 	q := strings.TrimSpace(escLeakPattern.ReplaceAllString(m.input.Value(), ""))
 	if q == "" {
@@ -347,20 +402,13 @@ func (m *replModel) runCommand(cmd string) (tea.Model, tea.Cmd) {
 	case "/pr":
 		switch {
 		case len(fields) < 2:
-			if m.activePR == "" {
-				m.addEntry(entrySystem, "no PR scope set — use `/pr <url|number>`")
-			} else {
-				m.addEntry(entrySystem, "PR scope: "+m.activePR)
-			}
-			return m, nil // reporting only — keep the conversation
+			return m, m.loadPRPickerCmd() // open the PR list
 		case fields[1] == "clear":
 			m.activePR = ""
 			m.newConversation()
 			m.addEntry(entrySystem, "PR scope cleared")
 		default:
-			m.activePR = fields[1]
-			m.newConversation()
-			m.addEntry(entrySystem, "PR scope set: "+m.activePR)
+			return m, m.setPRCmd(fields[1]) // validate readiness + set
 		}
 	case "/workspace", "/ws":
 		if len(fields) >= 2 {
@@ -478,6 +526,30 @@ func (m *replModel) openPicker(msg pickerLoadedMsg) {
 	m.refreshPicker()
 }
 
+func (m *replModel) openPRPicker(msg prPickerLoadedMsg) {
+	if msg.err != nil {
+		m.addEntry(entryError, msg.err.Error())
+		return
+	}
+	if len(msg.items) == 0 {
+		m.addEntry(entrySystem, "no pull requests found for this workspace")
+		return
+	}
+	m.mode = modePickingPR
+	m.prItems = msg.items
+	m.prIdx = 0
+	m.input.Blur()
+	m.refreshPRPicker()
+}
+
+// applyPRScope stores the chosen PR as the active scope and starts a fresh
+// conversation, so the new scope isn't mixed with prior turns.
+func (m *replModel) applyPRScope(pr, label string) {
+	m.activePR = pr
+	m.newConversation()
+	m.addEntry(entrySystem, "PR scope set: "+label)
+}
+
 // --- async command Cmds ---
 
 func (m *replModel) resolveCurrentNameCmd() tea.Cmd {
@@ -518,6 +590,100 @@ func (m *replModel) switchWorkspaceCmd(target string) tea.Cmd {
 		}
 		return switchResultMsg{err: fmt.Errorf("no accessible workspace matching %q", target)}
 	}
+}
+
+func (m *replModel) loadPRPickerCmd() tea.Cmd {
+	client, ws := m.env.client, m.env.workspace
+	return func() tea.Msg {
+		items, err := client.PRReviews(context.Background(), ws)
+		return prPickerLoadedMsg{items: items, err: err}
+	}
+}
+
+// setPRCmd resolves a pasted GitHub PR URL against the workspace's reviews and
+// only scopes to it when the review is ready (completed). A URL with no
+// matching or not-yet-ready review is reported, not set. Bare PR numbers are
+// intentionally not accepted here — use the picker (`/pr` with no argument).
+func (m *replModel) setPRCmd(url string) tea.Cmd {
+	client, ws := m.env.client, m.env.workspace
+	return func() tea.Msg {
+		if !isPRURL(url) {
+			return prSetResultMsg{err: fmt.Errorf("%q is not a pull request URL — paste a GitHub PR URL, or run /pr to pick from the list", url)}
+		}
+		reviews, err := client.PRReviews(context.Background(), ws)
+		if err != nil {
+			return prSetResultMsg{err: err}
+		}
+		pr := matchPRReview(reviews, url)
+		if pr == nil {
+			return prSetResultMsg{err: fmt.Errorf("no pull request matching %q in this workspace", url)}
+		}
+		if !pr.Ready() {
+			return prSetResultMsg{err: fmt.Errorf("PR #%d is not ready yet (%s) — its review must be completed before scoping to it", pr.PRNumber, prStatusLabel(pr.Status))}
+		}
+		return prSetResultMsg{pr: pr.PRURL, label: prLabel(*pr)}
+	}
+}
+
+// --- PR URL matching ---
+
+var prURLNumberRe = regexp.MustCompile(`/pull/(\d+)`)
+
+// isPRURL reports whether s looks like a GitHub pull request URL (contains a
+// /pull/<n> segment). Bare PR numbers are deliberately rejected.
+func isPRURL(s string) bool {
+	return prURLNumberRe.FindStringIndex(s) != nil
+}
+
+// matchPRReview finds the review a pasted PR URL points at — first by
+// normalised URL equality (so http/https and trailing-slash variants resolve),
+// then by the PR number in its /pull/<n> path as a fallback.
+func matchPRReview(reviews []apiclient.PRReview, url string) *apiclient.PRReview {
+	norm := normalizePRURL(url)
+	for i := range reviews {
+		if normalizePRURL(reviews[i].PRURL) == norm {
+			return &reviews[i]
+		}
+	}
+	if m := prURLNumberRe.FindStringSubmatch(url); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return prByNumber(reviews, n)
+	}
+	return nil
+}
+
+func prByNumber(reviews []apiclient.PRReview, n int) *apiclient.PRReview {
+	for i := range reviews {
+		if reviews[i].PRNumber == n {
+			return &reviews[i]
+		}
+	}
+	return nil
+}
+
+// normalizePRURL lowercases and strips the scheme and trailing slash so URLs
+// that differ only cosmetically compare equal.
+func normalizePRURL(u string) string {
+	u = strings.ToLower(strings.TrimSpace(u))
+	u = strings.TrimPrefix(u, "https://")
+	u = strings.TrimPrefix(u, "http://")
+	return strings.TrimSuffix(u, "/")
+}
+
+// prLabel is the transcript label for a selected PR, e.g. "#123 · Fix the bug".
+func prLabel(pr apiclient.PRReview) string {
+	if pr.PRTitle == "" {
+		return fmt.Sprintf("#%d", pr.PRNumber)
+	}
+	return fmt.Sprintf("#%d · %s", pr.PRNumber, pr.PRTitle)
+}
+
+// prStatusLabel renders a review's raw status for humans, e.g. "in progress".
+func prStatusLabel(status string) string {
+	if status == "" {
+		return "pending"
+	}
+	return strings.ToLower(strings.ReplaceAll(status, "_", " "))
 }
 
 // --- history ---
@@ -564,9 +730,12 @@ func (m *replModel) resize(w, h int) {
 	}
 	m.input.Width = w - 4
 	m.md.Resize(w - 2)
-	if m.mode == modePicking {
+	switch m.mode {
+	case modePicking:
 		m.refreshPicker()
-	} else {
+	case modePickingPR:
+		m.refreshPRPicker()
+	default:
 		m.refresh()
 	}
 }
@@ -653,6 +822,30 @@ func (m *replModel) refreshPicker() {
 	m.vp.GotoTop()
 }
 
+func (m *replModel) refreshPRPicker() {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("Select a pull request") + "\n\n")
+	for i, pr := range m.prItems {
+		num := fmt.Sprintf("#%-5d", pr.PRNumber)
+		title := pr.PRTitle
+		if title == "" {
+			title = pr.PRURL
+		}
+		status := faintStyle.Render("  " + prStatusLabel(pr.Status))
+		if !pr.Ready() {
+			status = faintStyle.Render("  " + prStatusLabel(pr.Status) + " — not ready")
+		}
+		if i == m.prIdx {
+			b.WriteString(selStyle.Render("❯ "+num+" "+title) + status + "\n")
+		} else {
+			b.WriteString("  " + num + " " + title + status + "\n")
+		}
+	}
+	b.WriteString("\n" + faintStyle.Render("↑/↓ select · enter confirm · esc cancel"))
+	m.vp.SetContent(b.String())
+	m.vp.GotoTop()
+}
+
 func (m *replModel) statusBar() string {
 	ws := m.wsName
 	if ws == "" {
@@ -677,6 +870,9 @@ func (m *replModel) View() string {
 	if m.mode == modePicking {
 		return m.vp.View() + "\n" + faintStyle.Render("selecting workspace…") + "\n\n" + m.statusBar()
 	}
+	if m.mode == modePickingPR {
+		return m.vp.View() + "\n" + faintStyle.Render("selecting pull request…") + "\n\n" + m.statusBar()
+	}
 
 	// The animated status/spinner lives in the transcript itself (see
 	// spinnerLine), so this hint stays static regardless of streaming state.
@@ -687,7 +883,8 @@ func (m *replModel) View() string {
 }
 
 const replHelp = `commands:
-  /pr <url|number>   scope the conversation to a pull request's diff report
+  /pr                open the pull request picker
+  /pr <url>          scope to a pull request URL (must be a completed review)
   /pr clear          remove the PR scope
   /workspace [slug]  switch workspace (no arg = picker; validates access)
   /new               start a fresh conversation

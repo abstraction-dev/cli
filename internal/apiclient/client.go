@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -52,6 +53,32 @@ func (c *Client) Workspaces(ctx context.Context) ([]Workspace, error) {
 		return nil, err
 	}
 	return out.Workspaces, nil
+}
+
+// PRReviews lists the pull-request reviews (diff reports) for a workspace.
+func (c *Client) PRReviews(ctx context.Context, workspace string) ([]PRReview, error) {
+	u := c.BaseURL + "/api/workspaces/" + url.PathEscape(workspace) + "/pr-reviews"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.auth(req)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errorFrom(resp)
+	}
+
+	var out listPRReviewsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Reviews, nil
 }
 
 // AskBuffered runs one ask and returns the whole formatted answer.

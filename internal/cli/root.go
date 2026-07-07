@@ -47,11 +47,11 @@ Usage:
 
 Flags:
   -w, -workspace <slug>   Workspace to query (a UUID slug).
-  -pr <url|number>        Scope the question to a GitHub pull request's diff report.
+  -pr <url>               Scope the question to a GitHub pull request URL.
   -api-url <url>          Backend base URL (default https://app.abstraction.dev).
   -config <path>          Config file (default ~/.abstr.json).
   -h                      Show this help.
 
-Interactive commands: /pr <url|number>, /pr clear, /workspace [slug], /new, /help, /exit
+Interactive commands: /pr [url], /pr clear, /workspace [slug], /new, /help, /exit
 `)
 }
