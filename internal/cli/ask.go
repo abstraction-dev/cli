@@ -31,7 +31,7 @@ func runAsk(ctx context.Context, args []string) int {
 	var opts runOptions
 	fs.StringVar(&opts.workspace, "w", "", "workspace slug")
 	fs.StringVar(&opts.workspace, "workspace", "", "workspace slug")
-	fs.StringVar(&opts.pr, "pr", "", "GitHub PR URL or number")
+	fs.StringVar(&opts.pr, "pr", "", "GitHub pull request URL")
 	fs.StringVar(&opts.configPath, "config", "", "config file path")
 	fs.StringVar(&opts.apiURL, "api-url", "", "API base URL")
 
@@ -39,6 +39,11 @@ func runAsk(ctx context.Context, args []string) int {
 		if err == flag.ErrHelp {
 			return exitOK
 		}
+		return exitUsage
+	}
+
+	if opts.pr != "" && !isPRURL(opts.pr) {
+		fmt.Fprintln(os.Stderr, "abstr: -pr must be a GitHub pull request URL (e.g. https://github.com/owner/repo/pull/123)")
 		return exitUsage
 	}
 
