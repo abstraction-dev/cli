@@ -1,0 +1,54 @@
+version: 2
+
+project_name: abstr
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: abstr
+    main: ./cmd/abstr
+    binary: abstr
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X github.com/abstraction-dev/cli/internal/cli.version={{.Version}}
+
+archives:
+  - id: abstr
+    ids:
+      - abstr
+    name_template: "abstr_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "sha256sums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  github:
+    owner: abstraction-dev
+    name: cli
+  draft: false
