@@ -7,9 +7,19 @@ ephemeral; nothing is stored server-side.
 
 ## Install
 
+macOS / Linux:
+
 ```sh
-go install github.com/abstraction-dev/cli/cmd/abstr@latest
+curl -fsSL https://app.abstraction.dev/install.sh | sh
 ```
+
+This downloads the latest prebuilt binary for your OS/arch from
+[GitHub Releases](https://github.com/abstraction-dev/cli/releases/latest) and
+installs it to `/usr/local/bin` (or `~/.local/bin` if that isn't writable).
+
+Windows: download `abstr_windows_amd64.zip` from the
+[latest release](https://github.com/abstraction-dev/cli/releases/latest), extract it,
+and put `abstr.exe` somewhere on your `PATH`.
 
 ## First run
 

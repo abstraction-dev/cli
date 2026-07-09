@@ -9,7 +9,8 @@ import (
 	"os"
 )
 
-const version = "0.1.0"
+// version is injected at build time via -ldflags -X (see .goreleaser.yaml).
+var version = "dev"
 
 // Main is the CLI entry point. It returns the process exit code.
 func Main(args []string) int {

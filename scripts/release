@@ -1,0 +1,143 @@
+#!/bin/bash
+
+set -e
+
+for arg in "$@"; do
+  if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+    echo "release — bump the latest semver tag and let GoReleaser publish a GitHub release."
+    echo ""
+    echo "Usage: release [MAJOR|MINOR|BUGFIX] [--dry-run]"
+    echo ""
+    echo "  MAJOR     — bump the major version (x.0.0)"
+    echo "  MINOR     — bump the minor version (X.x.0) [default]"
+    echo "  BUGFIX    — bump the patch version (X.Y.x)"
+    echo "  --dry-run — show the plan (new tag, commits) without tagging, pushing,"
+    echo "              or watching a workflow"
+    echo ""
+    echo "Finds the latest vX.Y.Z tag, creates and pushes a new one, then watches"
+    echo "the release workflow (.github/workflows/release.yml) run GoReleaser."
+    exit 0
+  fi
+done
+
+# Must be in a git repository
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "Error: not a git repository."; exit 1; }
+
+DRY_RUN=false
+BUMP_RAW=""
+for arg in "$@"; do
+  if [[ "$arg" == "--dry-run" ]]; then
+    DRY_RUN=true
+  else
+    BUMP_RAW="$arg"
+  fi
+done
+
+if [ -z "$BUMP_RAW" ]; then
+  BUMP_RAW="MINOR"
+fi
+
+case "$(printf '%s' "$BUMP_RAW" | tr '[:lower:]' '[:upper:]')" in
+  MAJOR)        BUMP="major" ;;
+  MINOR)        BUMP="minor" ;;
+  BUGFIX|PATCH) BUMP="patch" ;;
+  *)
+    echo "Error: bump type must be MAJOR, MINOR, or BUGFIX (got '$BUMP_RAW')."
+    exit 1
+    ;;
+esac
+
+# Sync tags from remote so we bump from the true latest
+echo "Syncing tags from origin..."
+git fetch --tags --prune --prune-tags origin >/dev/null 2>&1
+
+# Find the latest semver tag. Tag format: vX.Y.Z
+LATEST=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1)
+
+if [ -z "$LATEST" ]; then
+  LATEST="v0.0.0"
+  echo "No existing semver tag found; starting from $LATEST."
+fi
+
+VERSION="${LATEST#v}"
+IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+if ! [[ "$MAJOR" =~ ^[0-9]+$ && "$MINOR" =~ ^[0-9]+$ && "$PATCH" =~ ^[0-9]+$ ]]; then
+  echo "Error: could not parse '$LATEST' as semver."
+  exit 1
+fi
+
+case "$BUMP" in
+  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+  patch) PATCH=$((PATCH + 1)) ;;
+esac
+
+NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+
+if git rev-parse --verify --quiet "${LATEST}^{commit}" >/dev/null; then
+  COMMITS=$(git log --pretty=format:'- %s (%h)' "${LATEST}..HEAD")
+else
+  COMMITS=$(git log --pretty=format:'- %s (%h)' -n 50)
+fi
+
+[ -z "$COMMITS" ] && COMMITS="_No commits since ${LATEST}._"
+
+echo ""
+echo "Previous version: $LATEST"
+echo "New version:      $NEW_TAG"
+echo ""
+echo "--- Commits since $LATEST ---"
+printf '%s\n' "$COMMITS"
+echo "------------------------------"
+echo ""
+echo "GoReleaser will generate the release notes and publish the GitHub release"
+echo "once the tag is pushed (see .github/workflows/release.yml)."
+echo ""
+
+if [ "$DRY_RUN" = true ]; then
+  echo "Dry run: would create and push tag $NEW_TAG. Nothing changed."
+  exit 0
+fi
+
+# Confirmation: empty string or 'yes' proceeds; anything else aborts
+read -rp "Create and push tag $NEW_TAG? [yes / <empty>=yes / other=abort]: " CONFIRM
+CONFIRM_LC=$(printf '%s' "$CONFIRM" | tr '[:upper:]' '[:lower:]')
+
+if [[ -n "$CONFIRM" && "$CONFIRM_LC" != "yes" ]]; then
+  echo "Aborted."
+  exit 1
+fi
+
+echo ""
+echo "Creating and pushing tag $NEW_TAG..."
+git tag -a "$NEW_TAG" -m "$NEW_TAG"
+git push origin "$NEW_TAG"
+
+# Try to watch the release workflow. GitHub may take a moment to register the
+# run, so poll briefly.
+echo ""
+echo "Looking for the workflow triggered by $NEW_TAG..."
+RUN_ID=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  RUN_ID=$(gh run list --event push --limit 20 \
+    --json databaseId,headBranch,status \
+    --jq ".[] | select(.headBranch == \"$NEW_TAG\") | .databaseId" 2>/dev/null | head -n 1)
+  [ -n "$RUN_ID" ] && break
+  sleep 2
+done
+
+if [ -n "$RUN_ID" ]; then
+  echo "Watching workflow run $RUN_ID..."
+  gh run watch "$RUN_ID" --exit-status || {
+    echo "Release workflow did not complete successfully."
+    exit 1
+  }
+else
+  echo "No release workflow detected yet; check the Actions tab."
+fi
+
+RELEASE_URL=$(gh release view "$NEW_TAG" --json url --jq .url 2>/dev/null || true)
+echo ""
+echo "Release $NEW_TAG published."
+[ -n "$RELEASE_URL" ] && echo "$RELEASE_URL"
