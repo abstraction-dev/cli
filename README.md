@@ -10,7 +10,7 @@ ephemeral; nothing is stored server-side.
 macOS / Linux:
 
 ```sh
-curl -fsSL https://app.abstraction.dev/install.sh | sh
+curl -fsSL https://abstraction.dev/install.sh | sh
 ```
 
 This downloads the latest prebuilt binary for your OS/arch from
