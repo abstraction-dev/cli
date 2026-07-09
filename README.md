@@ -21,12 +21,6 @@ Windows: download `abstr_windows_amd64.zip` from the
 [latest release](https://github.com/abstraction-dev/cli/releases/latest), extract it,
 and put `abstr.exe` somewhere on your `PATH`.
 
-Already have Go installed?
-
-```sh
-go install github.com/abstraction-dev/cli/cmd/abstr@latest
-```
-
 ## First run
 
 ```sh
