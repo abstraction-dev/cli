@@ -31,6 +31,7 @@ esac
 
 asset="${BINARY}_${os}_${arch}.tar.gz"
 url="https://github.com/${REPO}/releases/latest/download/${asset}"
+checksums_url="https://github.com/${REPO}/releases/latest/download/sha256sums.txt"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -38,6 +39,28 @@ trap 'rm -rf "$tmpdir"' EXIT
 echo "Downloading ${url}..." >&2
 if ! curl -fsSL "$url" -o "${tmpdir}/${asset}"; then
 	fail "download failed: ${url}"
+fi
+
+echo "Downloading ${checksums_url}..." >&2
+if ! curl -fsSL "$checksums_url" -o "${tmpdir}/sha256sums.txt"; then
+	fail "download failed: ${checksums_url}"
+fi
+
+expected_sum="$(awk -v f="$asset" '$2 == f { print $1 }' "${tmpdir}/sha256sums.txt")"
+if [ -z "$expected_sum" ]; then
+	fail "no checksum entry for ${asset} in sha256sums.txt"
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+	actual_sum="$(sha256sum "${tmpdir}/${asset}" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+	actual_sum="$(shasum -a 256 "${tmpdir}/${asset}" | awk '{ print $1 }')"
+else
+	fail "no sha256 tool found (need sha256sum or shasum)"
+fi
+
+if [ "$expected_sum" != "$actual_sum" ]; then
+	fail "checksum mismatch for ${asset}: expected ${expected_sum}, got ${actual_sum}"
 fi
 
 if ! tar -xzf "${tmpdir}/${asset}" -C "$tmpdir"; then
