@@ -1,73 +1,40 @@
 # Configuration
 
-# Config Command
+Configuration reference for the `abstr config` command, covering how to view or locate your active settings.
 
-The `config` command lets you inspect the CLI's current configuration without editing files by hand. It is handled by the [runConfig](internal/cli/configcmd.go).
+## Overview
+
+The `config` command is handled by [runConfig](internal/cli/configcmd.go), which loads settings and then prints either the config path or a redacted configuration summary depending on the subcommand given. It is reached when you run `abstr config ...`, since [Main](internal/cli/root.go) routes the `"config"` argument to this handler.
 
 ## Subcommands
 
 ### `show` (default)
 
-Running `abstr config` or `abstr config show` prints a summary of the active configuration: the config file path, the workspace, a masked API key, and the resolved API URL — all produced by the [runConfig](internal/cli/configcmd.go).
+Running `abstr config` or `abstr config show` prints a four-line summary: the config file path, the active workspace, a masked API key, and the resolved API URL, all produced by [runConfig](internal/cli/configcmd.go).
+
+- **config** — the file path returned by [FilePath](internal/config/config.go).
+- **workspace** — the workspace value stored in the loaded configuration.
+- **api_key** — the API key, masked by [redactKey](internal/cli/configcmd.go), which shows `(not set)` when empty, `****` for short keys, or the first 8 characters followed by an ellipsis otherwise.
+- **api_url** — the effective API URL as computed by [BaseURLResolved](internal/config/config.go), which prefers an environment override, falls back to the configured URL, and finally to the built-in default.
 
 ### `path`
 
-Running `abstr config path` prints only the config file location, using the [FilePath](internal/config/config.go).
+Running `abstr config path` prints only the config file location, again via [runConfig](internal/cli/configcmd.go) calling [FilePath](internal/config/config.go). Use this when you just need the file's location, for example to open it in an editor.
 
-If no subcommand is given, `show` is used as the default action.
+## The `--config` flag
 
-## Flags
+Both subcommands accept a `--config <file>` flag to point at an alternate config file instead of the default location, since [runConfig](internal/cli/configcmd.go) parses this flag and passes it through when loading settings. If loading fails, the command reports an error and exits.
 
-- `--config <path>` — points the command at an alternate config file instead of the default location resolved by [Load](internal/config/config.go).
+## Notes
 
-## Masked values
-
-The API key is never printed in full. It is passed through a [redactKey](internal/cli/configcmd.go) that shows `(not set)` when empty, `****` for short keys, or the first 8 characters followed by an ellipsis for longer keys. The API URL shown by `show` is the [BaseURLResolved](internal/config/config.go), which prefers an environment override, then the configured value, and finally falls back to the default.
-
-Here's the flow through the command when it runs
-
-```mermaid
-flowchart TD
-    N1["func runConfig(args []string) int"]
-    N2["RETURN_NODE"]
-    N3["return exitOK"]
-    N4["switch action"]
-    N5["Reject unknown action"]
-    N8["Print configuration summary"]
-    N10["Print config file path"]
-    N12["Pick explicit action"]
-    N15["action := 'show'"]
-    N16["Handle configuration load errors"]
-    N20["Read command and load configuration"]
-    N22["Parse arguments"]
-    N25["Initialize config command flags"]
-    N3 -->|RETURN_STEP| N2
-    N5 -->|RETURN_STEP| N2
-    N4 -->|case | N5
-    N8 -->|COMPUTE_STEP| N3
-    N4 -->|case "show"| N8
-    N10 -->|COMPUTE_STEP| N3
-    N4 -->|case "path"| N10
-    N12 -->|COMPUTE_STEP| N4
-    N12 -->|BRANCH_FALSE_CASE| N4
-    N15 -->|COMPUTE_STEP| N12
-    N16 -->|RETURN_STEP| N2
-    N16 -->|BRANCH_FALSE_CASE| N15
-    N20 -->|COMPUTE_STEP| N16
-    N22 -->|RETURN_STEP| N2
-    N22 -->|BRANCH_FALSE_CASE| N20
-    N25 -->|COMPUTE_STEP| N22
-    N1 -->|COMPUTE_STEP| N25
-
-```
-
-
+- Sensitive values such as the API key are never printed in full — they are always masked by [redactKey](internal/cli/configcmd.go) in `show` output.
+- An unrecognized subcommand results in a usage error, as handled by [runConfig](internal/cli/configcmd.go).
 
 ## See also
 
 - [Getting Started](../getting-started.md)
 - [Login & Authentication](../login-authentication.md)
-- [Asking Questions](../asking-questions.md)
 - [Managing Workspaces](../managing-workspaces.md)
+- [Asking Questions](../asking-questions.md)
 - [Command Reference](../command-reference.md)
 
