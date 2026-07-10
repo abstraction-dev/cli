@@ -12,10 +12,13 @@ The `config` command is handled by [runConfig](internal/cli/configcmd.go), which
 
 Running `abstr config` or `abstr config show` prints a four-line summary: the config file path, the active workspace, a masked API key, and the resolved API URL, all produced by [runConfig](internal/cli/configcmd.go).
 
-- **config** — the file path returned by [FilePath](internal/config/config.go).
-- **workspace** — the workspace value stored in the loaded configuration.
-- **api_key** — the API key, masked by [redactKey](internal/cli/configcmd.go), which shows `(not set)` when empty, `****` for short keys, or the first 8 characters followed by an ellipsis otherwise.
-- **api_url** — the effective API URL as computed by [BaseURLResolved](internal/config/config.go), which prefers an environment override, falls back to the configured URL, and finally to the built-in default.
+* **config** — the file path returned by [FilePath](internal/config/config.go).
+
+* **workspace** — the workspace value stored in the loaded configuration.
+
+* **api\_key** — the API key, masked by [redactKey](internal/cli/configcmd.go), which shows `(not set)` when empty, `****` for short keys, or the first 8 characters followed by an ellipsis otherwise.
+
+* **api\_url** — the effective API URL as computed by [BaseURLResolved](internal/config/config.go), which prefers an environment override, falls back to the configured URL, and finally to the built-in default.
 
 ### `path`
 
@@ -27,14 +30,21 @@ Both subcommands accept a `--config <file>` flag to point at an alternate config
 
 ## Notes
 
-- Sensitive values such as the API key are never printed in full — they are always masked by [redactKey](internal/cli/configcmd.go) in `show` output.
-- An unrecognized subcommand results in a usage error, as handled by [runConfig](internal/cli/configcmd.go).
+* Sensitive values such as the API key are never printed in full — they are always masked by [redactKey](internal/cli/configcmd.go) in `show` output.
+
+* An unrecognized subcommand results in a usage error, as handled by [runConfig](internal/cli/configcmd.go).
 
 ## See also
 
-- [Getting Started](../getting-started.md)
-- [Login & Authentication](../login-authentication.md)
-- [Managing Workspaces](../managing-workspaces.md)
-- [Asking Questions](../asking-questions.md)
-- [Command Reference](../command-reference.md)
+* [Getting Started](../getting-started.md)
+
+* [Login & Authentication](../login-authentication.md)
+
+* [Managing Workspaces](../managing-workspaces.md)
+
+* [Asking Questions](../asking-questions.md)
+
+* [Command Reference](../command-reference.md)
+
+
 
