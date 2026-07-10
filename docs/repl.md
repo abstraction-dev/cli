@@ -2,11 +2,12 @@
 
 # Interactive REPL Mode
 
-Astrid's interactive REPL lets you chat with Astrid, switch workspaces, and scope your questions to a pull request, all from one continuous terminal session.
+Use the CLI's interactive REPL to have a back-and-forth chat with Astrid in a single terminal session.
 
-## Starting a Session
+## Starting a session
 
-Launching interactive mode hands control to the [runREPL](internal/cli/repl.go), which creates a new session identifier, prepares the markdown-aware terminal renderer, and configures the text input area before launching the full-screen Bubble Tea program. The session opens with a welcome message reminding you to type `/help` for commands or `/exit` to quit. If you're not sure how to get set up first, see the [Getting Started](index.md) guide, and make sure you're [logged in](login.md) beforehand.
+Run the [runAsk](internal/cli/ask.go) without typing a question, and when your input is a live terminal, [resolveQuery](internal/cli/ask.go) switches automatically into interactive mode. From there, [runREPL](internal/cli/repl.go) creates a session id, detects your terminal's background for markdown styling, and opens a full-screen chat window seeded with a welcome message telling you to type /help for commands or /exit to quit.
+
 
 ```mermaid
 flowchart TD
@@ -56,9 +57,11 @@ ti.Prompt = inputPrompt"]
 
 ## Chatting
 
-Once the session is running, just type your question and press enter to ask Astrid — see [Asking Questions](ask.md) for tips on getting good answers. You can also type slash commands, which are interpreted by the [runCommand](internal/cli/repl.go): `/help` shows the built-in help text, `/new` (or `/reset`) starts a fresh conversation, `/workspace` (or `/ws`) opens a workspace picker or switches directly to a named workspace, and `/pr` opens a pull request picker, sets a specific PR, or clears the active PR scope with `/pr clear`. Full details on workspaces are in [Managing Workspaces](workspaces.md), and every command is listed in the [Command Reference](reference.md).
+Type your question and press enter to send it. Slash commands are handled by [runCommand](internal/cli/repl.go): /help shows the built-in help text, /new (or /reset) starts a fresh conversation, /workspace (or /ws) opens the workspace picker or switches directly when you give a name, and /pr opens the pull request picker, clears the active PR with `/pr clear`, or sets one directly. See the [command reference](reference.md) for the full list, and [managing workspaces](workspaces.md) for workspace switching details.
 
 ## Exiting
 
-Type `/exit` or `/quit` at any time to end the session, which the [runCommand](internal/cli/repl.go) handles by quitting the Bubble Tea program cleanly.
+Type /exit or /quit at any time, and [runCommand](internal/cli/repl.go) ends the session right away.
+
+See also [getting started](index.md), [logging in](login.md), and [asking questions](ask.md).
 
