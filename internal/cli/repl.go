@@ -54,8 +54,9 @@ var (
 var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[cuR]`)
 
 // runREPL launches the interactive session as a full-screen TUI: an alt-screen
-// transcript (ANSI markdown) above a context bar and prompt. Ctrl+C cancels the
-// in-flight question (or clears the input); Ctrl+D or /exit quits. Up/Down
+// transcript (ANSI markdown) above a context bar and prompt. Ctrl+C, Esc, and
+// Ctrl+X cancel the in-flight question (Ctrl+C also clears the input when
+// idle); Ctrl+D or /exit quits. Up/Down
 // navigate an in-memory history for this run.
 func runREPL(env *appEnv, initialPR string) int {
 	sessionID, _ := uuidutil.New()
@@ -292,6 +293,16 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlD:
 		if !m.streaming && m.input.Value() == "" {
 			return m, tea.Quit
+		}
+		return m, nil
+
+	case tea.KeyEsc, tea.KeyCtrlX:
+		if m.streaming {
+			m.status = "cancelling…"
+			if m.cancel != nil {
+				m.cancel()
+			}
+			m.refresh()
 		}
 		return m, nil
 
@@ -808,7 +819,7 @@ func (m *replModel) spinnerLine() string {
 		status = "working…"
 	}
 	elapsed := int(time.Since(m.turnStarted).Seconds())
-	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    ctrl+c cancels", frame, status, elapsed))
+	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    esc cancels", frame, status, elapsed))
 }
 
 func (m *replModel) renderEntry(e transcriptEntry) string {
@@ -897,7 +908,7 @@ func (m *replModel) View() string {
 
 	// The animated status/spinner lives in the transcript itself (see
 	// spinnerLine), so this hint stays static regardless of streaming state.
-	hint := faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · ctrl+c clear · ctrl+d quit")
+	hint := faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · esc cancel · ctrl+c clear · ctrl+d quit")
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
 	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
