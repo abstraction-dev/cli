@@ -54,9 +54,9 @@ var (
 var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[cuR]`)
 
 // runREPL launches the interactive session as a full-screen TUI: an alt-screen
-// transcript (ANSI markdown) above a context bar and prompt. Ctrl+C, Esc, and
-// Ctrl+X cancel the in-flight question (Ctrl+C also clears the input when
-// idle); Ctrl+D or /exit quits. Up/Down
+// transcript (ANSI markdown) above a context bar and prompt. Esc or Ctrl+C
+// cancels the in-flight question (Ctrl+C also clears the input when idle);
+// Ctrl+D or /exit quits. Up/Down
 // navigate an in-memory history for this run.
 func runREPL(env *appEnv, initialPR string) int {
 	sessionID, _ := uuidutil.New()
@@ -296,7 +296,7 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyEsc, tea.KeyCtrlX:
+	case tea.KeyEsc:
 		if m.streaming {
 			m.status = "cancelling…"
 			if m.cancel != nil {
