@@ -13,8 +13,9 @@ import (
 	"golang.org/x/term"
 )
 
-// maxMarkdownWidth caps word-wrap so long lines stay readable on wide terminals.
-const maxMarkdownWidth = 100
+// defaultMarkdownWidth is used when no real terminal width is available (e.g.
+// output is piped, not a tty).
+const defaultMarkdownWidth = 100
 
 // Markdown renders markdown to ANSI-styled terminal text, auto-detecting the
 // terminal style. Safe for one-shot (immediate-mode) output where no full-screen
@@ -84,8 +85,8 @@ func (m *MDRenderer) Render(md string) string {
 }
 
 func clampWidth(width int) int {
-	if width <= 0 || width > maxMarkdownWidth {
-		return maxMarkdownWidth
+	if width <= 0 {
+		return defaultMarkdownWidth
 	}
 	return width
 }
