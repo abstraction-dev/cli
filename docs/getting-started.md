@@ -1,28 +1,18 @@
 # Getting Started
 
-## Getting Started with the CLI
+## Installing the CLI
 
-Welcome! This guide walks you through installing the CLI, running it for the first time, and taking your first steps once it's set up.
+The Abstraction CLI, called `abstr`, is a compiled Go binary that gives you [CLI Executable (abstr)](concept/cacc52d2-ad0c-430b-a569-5779139301ed). Once it's installed on your machine, you run it from your terminal by typing `abstr` followed by whatever you want to do.
 
-### 1. Install the CLI
+## Running It for the First Time
 
-The command-line tool is called `abstr`. Once installed, running it without any arguments — or with a question typed after it — is enough to get started, since the tool [Main](internal/cli/root.go) straight to its default question-answering flow if you don't type a specific command.
+If you just type `abstr` with nothing else, the CLI does not simply print an error — [Main](internal/cli/root.go) checks whether you gave it a specific subcommand like `login`, `workspace`, or `config`, and if not, it falls through to the [runAsk](internal/cli/ask.go). When there's no question typed and no piped input, and you're sitting at an interactive terminal, `abstr` [resolveQuery](internal/cli/ask.go) rather than asking you to add extra flags.
 
-### 2. Run it for the first time
+If you'd like to see what the tool can do before diving in, running `abstr help` (or `-h` / `--help`) prints a [printUsage](internal/cli/root.go) covering every command, flag, and interactive shortcut.
 
-Just type `abstr` in your terminal. If you don't provide a question and your terminal is interactive, the CLI automatically opens a live conversation session instead of exiting immediately — this decision about whether to go interactive, read piped input, or use text typed directly after the command is made automatically for you every time you run it. This behavior is 
+## What to Do Next
 
-You don't need to type any special flag to get into this conversation mode — it's the default when nothing else is provided, and it hands off to an [runREPL](internal/cli/repl.go) that keeps a running back-and-forth with Astrid until you exit.
+Before you can ask anything, the CLI needs an API key and a workspace to talk to. Running `abstr login` walks you through this: it [Load](internal/config/config.go), and if no API key is set yet, it [bootstrapAPIKey](internal/cli/env.go). See login.md for the full walkthrough.
 
-The first time you run a command, if you haven't stored an API key yet, the CLI will notice and walk you through getting one: it opens your browser to the settings page, asks you to paste in your key, and checks that it works — giving you a few tries if you mistype it. This first-time setup is [bootstrapAPIKey](internal/cli/env.go) so you don't need to look anything up yourself.
-
-### 3. What to do next
-
-**Log in.** Before asking real questions, run `abstr login` to store your API key and choose your workspace. This command [runLogin](internal/cli/login.go) so you don't have to repeat the setup next time. See the full [login guide](../login.md) for details.
-
-**Ask a question.** Once you're logged in, just run `abstr` followed by your question, or start it with no question to chat interactively. Full usage details — including flags for workspaces, pull requests, and more — are covered in the [ask guide](../ask.md).
-
-**Check your configuration.** If you ever want to see where your settings are stored or confirm what's active, run `abstr config show` or `abstr config path`. See the [configuration guide](../config.md) for more.
-
-That's it — install, run once to get set up, then log in and start asking questions.
+Once you're logged in, you're ready to start asking questions — either by typing one directly after `abstr`, piping text into it, or just staying in the interactive session that opens when you run `abstr` on its own. See ask.md for details on asking questions, and config.md if you ever need to check or change where your configuration is stored.
 
