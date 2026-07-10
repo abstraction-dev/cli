@@ -1,35 +1,73 @@
 # Configuration
 
-The `abstr config` command lets you inspect the CLI's current configuration without exposing sensitive values in your terminal. It is dispatched from the [Main](internal/cli/root.go), which forwards `config` arguments to the [runConfig](internal/cli/configcmd.go).
+# Config Command
 
-## Usage
-
-```
-abstr config [show|path] [--config <path>]
-```
-
-If no subcommand is given, `show` runs by default, as implemented by the [runConfig](internal/cli/configcmd.go).
+The `config` command lets you inspect the CLI's current configuration without editing files by hand. It is handled by the [runConfig](internal/cli/configcmd.go).
 
 ## Subcommands
 
 ### `show` (default)
 
-Prints a short summary of the active configuration, as implemented by the [runConfig](internal/cli/configcmd.go):
-
-- **config** — the config file path currently in use, resolved by the config's [FilePath](internal/config/config.go)
-- **workspace** — the active workspace name
-- **api_key** — your API key, shown only in [redactKey](internal/cli/configcmd.go)
-- **api_url** — the API URL actually being used, resolved by the [BaseURLResolved](internal/config/config.go), which prefers an environment override, then a configured value, then falls back to a default
+Running `abstr config` or `abstr config show` prints a summary of the active configuration: the config file path, the workspace, a masked API key, and the resolved API URL — all produced by the [runConfig](internal/cli/configcmd.go).
 
 ### `path`
 
-Prints only the config file location, again resolved by the [FilePath](internal/config/config.go), with nothing else — useful for scripting or quickly locating the file on disk.
+Running `abstr config path` prints only the config file location, using the [FilePath](internal/config/config.go).
 
-## The `--config` flag
+If no subcommand is given, `show` is used as the default action.
 
-Pass `--config <path>` to point the command at an alternate config file instead of the default location. The value is passed straight through to the [Load](internal/config/config.go), which reads and decodes that file if it exists, or falls back to an empty configuration if it doesn't.
+## Flags
+
+- `--config <path>` — points the command at an alternate config file instead of the default location resolved by [Load](internal/config/config.go).
 
 ## Masked values
 
-The API key is never printed in full. The [redactKey](internal/cli/configcmd.go) shows `(not set)` when no key is configured, `****` for very short keys, and otherwise only the first 8 characters followed by an ellipsis — enough to confirm which key is active without exposing the whole secret.
+The API key is never printed in full. It is passed through a [redactKey](internal/cli/configcmd.go) that shows `(not set)` when empty, `****` for short keys, or the first 8 characters followed by an ellipsis for longer keys. The API URL shown by `show` is the [BaseURLResolved](internal/config/config.go), which prefers an environment override, then the configured value, and finally falls back to the default.
+
+Here's the flow through the command when it runs
+
+```mermaid
+flowchart TD
+    N1["func runConfig(args []string) int"]
+    N2["RETURN_NODE"]
+    N3["return exitOK"]
+    N4["switch action"]
+    N5["Reject unknown action"]
+    N8["Print configuration summary"]
+    N10["Print config file path"]
+    N12["Pick explicit action"]
+    N15["action := 'show'"]
+    N16["Handle configuration load errors"]
+    N20["Read command and load configuration"]
+    N22["Parse arguments"]
+    N25["Initialize config command flags"]
+    N3 -->|RETURN_STEP| N2
+    N5 -->|RETURN_STEP| N2
+    N4 -->|case | N5
+    N8 -->|COMPUTE_STEP| N3
+    N4 -->|case "show"| N8
+    N10 -->|COMPUTE_STEP| N3
+    N4 -->|case "path"| N10
+    N12 -->|COMPUTE_STEP| N4
+    N12 -->|BRANCH_FALSE_CASE| N4
+    N15 -->|COMPUTE_STEP| N12
+    N16 -->|RETURN_STEP| N2
+    N16 -->|BRANCH_FALSE_CASE| N15
+    N20 -->|COMPUTE_STEP| N16
+    N22 -->|RETURN_STEP| N2
+    N22 -->|BRANCH_FALSE_CASE| N20
+    N25 -->|COMPUTE_STEP| N22
+    N1 -->|COMPUTE_STEP| N25
+
+```
+
+
+
+## See also
+
+- [Getting Started](../getting-started.md)
+- [Login & Authentication](../login-authentication.md)
+- [Asking Questions](../asking-questions.md)
+- [Managing Workspaces](../managing-workspaces.md)
+- [Command Reference](../command-reference.md)
 
