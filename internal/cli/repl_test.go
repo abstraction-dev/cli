@@ -6,11 +6,11 @@ import (
 	"testing"
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 )
 
 func newHistoryModel() *replModel {
-	ti := textinput.New()
+	ti := textarea.New()
 	return &replModel{
 		input:   ti,
 		history: []string{"first", "second", "third"},
@@ -52,7 +52,7 @@ func TestHistoryNavigation(t *testing.T) {
 }
 
 func TestHistoryNavigationEmpty(t *testing.T) {
-	ti := textinput.New()
+	ti := textarea.New()
 	m := &replModel{input: ti}
 	m.historyPrev() // no history — must not panic or change anything
 	m.historyNext()

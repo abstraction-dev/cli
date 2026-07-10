@@ -13,21 +13,30 @@ import (
 	"github.com/abstraction-dev/cli/internal/render"
 	"github.com/abstraction-dev/cli/internal/uuidutil"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
+// inputHeight is the number of visible rows in the input box. It wraps long
+// queries within its width and scrolls internally rather than growing, so the
+// rest of the layout never has to reflow around it.
+const inputHeight = 3
+
 // footerHeight is the number of lines reserved below the transcript viewport:
-// a hint/status line, a rule, the input line, another rule, and the context bar.
-const footerHeight = 5
+// a hint/status line, a rule, the input box, another rule, and the context bar.
+const footerHeight = inputHeight + 4
 
 // spinnerInterval is how often the in-transcript status line's spinner frame
 // and elapsed timer advance while a turn is streaming.
 const spinnerInterval = 100 * time.Millisecond
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// inputPrompt marks the first line of the input box; wrapped continuation
+// lines get no prompt (see the SetPromptFunc call in runREPL).
+const inputPrompt = "❯ "
 
 var (
 	userStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
@@ -45,8 +54,9 @@ var (
 var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[cuR]`)
 
 // runREPL launches the interactive session as a full-screen TUI: an alt-screen
-// transcript (ANSI markdown) above a context bar and prompt. Ctrl+C cancels the
-// in-flight question (or clears the input); Ctrl+D or /exit quits. Up/Down
+// transcript (ANSI markdown) above a context bar and prompt. Esc or Ctrl+C
+// cancels the in-flight question (Ctrl+C also clears the input when idle);
+// Ctrl+D or /exit quits. Up/Down
 // navigate an in-memory history for this run.
 func runREPL(env *appEnv, initialPR string) int {
 	sessionID, _ := uuidutil.New()
@@ -55,12 +65,24 @@ func runREPL(env *appEnv, initialPR string) int {
 	// over — querying it later would leak the response into the input.
 	md := render.NewMDRenderer(render.HasDarkBackground(), 0)
 
-	ti := textinput.New()
-	ti.Prompt = "❯ "
-	ti.PromptStyle = userStyle
+	ti := textarea.New()
+	ti.Prompt = inputPrompt
+	ti.SetPromptFunc(lipgloss.Width(inputPrompt), func(line int) string {
+		if line == 0 {
+			return inputPrompt
+		}
+		return ""
+	})
+	ti.FocusedStyle.Prompt = userStyle
+	ti.BlurredStyle.Prompt = userStyle
+	// No active-line background highlight — keep the plain look the
+	// single-line input had.
+	ti.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ti.Placeholder = "Ask Astrid…  (/help, /exit)"
-	ti.Focus()
+	ti.ShowLineNumbers = false
 	ti.CharLimit = 8192
+	ti.SetHeight(inputHeight)
+	ti.Focus()
 
 	m := &replModel{
 		env:       env,
@@ -143,7 +165,7 @@ type replModel struct {
 	md  *render.MDRenderer
 
 	vp    viewport.Model
-	input textinput.Model
+	input textarea.Model
 	ready bool
 	width int
 
@@ -176,7 +198,7 @@ func waitForMsg(sub chan tea.Msg) tea.Cmd {
 }
 
 func (m *replModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitForMsg(m.sub), m.resolveCurrentNameCmd())
+	return tea.Batch(textarea.Blink, waitForMsg(m.sub), m.resolveCurrentNameCmd())
 }
 
 func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -271,6 +293,16 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlD:
 		if !m.streaming && m.input.Value() == "" {
 			return m, tea.Quit
+		}
+		return m, nil
+
+	case tea.KeyEsc:
+		if m.streaming {
+			m.status = "cancelling…"
+			if m.cancel != nil {
+				m.cancel()
+			}
+			m.refresh()
 		}
 		return m, nil
 
@@ -728,7 +760,7 @@ func (m *replModel) resize(w, h int) {
 		m.vp.Width = w
 		m.vp.Height = vpHeight
 	}
-	m.input.Width = w - 4
+	m.input.SetWidth(w - 4)
 	m.md.Resize(w - 2)
 	switch m.mode {
 	case modePicking:
@@ -787,7 +819,7 @@ func (m *replModel) spinnerLine() string {
 		status = "working…"
 	}
 	elapsed := int(time.Since(m.turnStarted).Seconds())
-	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    ctrl+c cancels", frame, status, elapsed))
+	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    esc cancels", frame, status, elapsed))
 }
 
 func (m *replModel) renderEntry(e transcriptEntry) string {
@@ -876,7 +908,7 @@ func (m *replModel) View() string {
 
 	// The animated status/spinner lives in the transcript itself (see
 	// spinnerLine), so this hint stays static regardless of streaming state.
-	hint := faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · ctrl+c clear · ctrl+d quit")
+	hint := faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · esc cancel · ctrl+c clear · ctrl+d quit")
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
 	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
