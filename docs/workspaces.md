@@ -1,42 +1,26 @@
 # Managing Workspaces
 
-# Managing Workspaces from the CLI
+## Managing Workspaces from the CLI
 
-Workspaces let you keep your data and settings separated — for example, one workspace for personal projects and another for a team. The CLI gives you three ways to work with them: listing what's available, letting the tool pick one for you, and switching to a specific one. All of this is handled by the `abstr workspace` (or its shorthand `abstr ws`) command, which is wired up in the CLI's [Main](internal/cli/root.go).
+Workspaces let you separate your questions, settings, and data by team or project. The `abstr workspace` command is your control center for switching between them, and everything below is handled by the [runWorkspace](internal/cli/workspace.go), which loads your configuration, confirms you're logged in, and then carries out whichever workspace action you ask for.
 
-Before using workspace commands, you'll need to be logged in — see the [login guide](../login.md) if you haven't done that yet. The workspace command checks for a saved API key and, if you're not logged in, it stops and tells you to run `abstr login` first, as part of [runWorkspace](internal/cli/workspace.go).
+If you haven't signed in yet, this command will stop and tell you to log in first — see login.md for how to do that.
 
-## Listing available workspaces
+### Listing available workspaces
 
-Run:
+To see every workspace available to your account, run `abstr workspace list`. This asks the dispatcher to fetch [Workspaces](internal/apiclient/client.go) from your account and print each one on its own line, with the workspace you're currently using marked by a `*` next to its name.
 
-```
-abstr workspace list
-```
+### Picking a workspace
 
-This fetches every workspace your account can access and prints each one's short identifier and display name, marking the one you're currently using with a `*` next to it, all handled by the `list` branch of [runWorkspace](internal/cli/workspace.go). The list of workspaces itself comes from a request to the workspaces API, made through the [Workspaces](internal/apiclient/client.go), and the "currently active" workspace is determined by [WorkspaceResolved](internal/config/config.go), which prefers an environment override over your saved configuration.
+If you just run `abstr workspace` with no extra words, it defaults to helping you pick one interactively through [pickWorkspace](internal/cli/env.go). If your account only has a single workspace, it's selected for you automatically and you'll see a short confirmation message. If you have more than one, you'll be shown a numbered list — with the default workspace labeled — and asked to type the number of the one you want. If you type something that isn't a valid number on the list, you'll get a warning and be asked to try again, so there's no risk of accidentally picking the wrong thing.
 
-## Picking a workspace
+### Switching workspace directly
 
-If you don't specify what to do, or you just run:
+If you already know the workspace you want, you can jump straight to it with `abstr workspace use <name-or-slug>`. This looks through your available workspaces for one whose short identifier matches exactly, or whose full name matches what you typed (capitalization doesn't matter). You can type a multi-word name without quotes and it will still be matched correctly. If nothing matches, you'll be told plainly that no workspace matched what you entered.
 
-```
-abstr workspace
-```
+### Saving your choice
 
-the CLI will pick a workspace for you interactively, through [pickWorkspace](internal/cli/env.go). If your account only has one workspace, it's chosen automatically and you're told which one is being used. If you have several, you'll see a numbered list — with the account's default workspace marked `(default)` — and you'll be prompted to type a number; the tool will keep asking if you type something invalid. If your account has no workspaces at all, you'll get a clear error saying none were found. Whatever you pick, the choice is then saved to your configuration by [saveWorkspace](internal/cli/workspace.go).
+Whether you picked a workspace interactively or switched with `use`, the result is handed off to [saveWorkspace](internal/cli/workspace.go), which writes your new workspace choice to your configuration file so it's remembered the next time you run a command. If saving fails for any reason, your previous workspace setting is kept in place rather than left in a broken state, and you'll see an error message explaining what went wrong.
 
-## Switching workspace
-
-To switch directly to a known workspace, run:
-
-```
-abstr workspace use <slug or name>
-```
-
-You can type either the workspace's short identifier or its full name (multi-word names don't need quotes), and the command will match it case-insensitively against the available list before saving it as your active workspace — this whole path is the `use` branch of [runWorkspace](internal/cli/workspace.go). If nothing matches, you'll get an error telling you no workspace matched what you typed.
-
-In every case — picking or switching — the result is written to your configuration file by [saveWorkspace](internal/cli/workspace.go), which also rolls back to your previous workspace if saving to disk fails, so you're never left in an inconsistent state.
-
-For the full list of workspace command options and other CLI commands, see the [command reference](../reference.md).
+For the complete list of workspace-related commands and their options, see reference.md.
 
