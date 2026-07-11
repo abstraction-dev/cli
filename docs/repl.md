@@ -1,94 +1,38 @@
 # Interactive Mode (REPL)
 
-Astrid's interactive mode turns the command line into a live conversation. Instead of typing one command and waiting for a single reply, you open a persistent session where you can ask questions, get streamed answers, and switch context — all without leaving the terminal.
+## What Interactive Mode Is
 
-## Starting a session
+Interactive mode turns the command-line tool into a live, ongoing conversation with Astrid instead of a single question-and-answer exchange. Rather than typing one question, waiting for a reply, and starting the command over again, you open a persistent chat session where you can ask follow-up questions, change context, and keep the discussion going — all without leaving the terminal.
 
-When you launch interactive mode, Astrid sets the whole experience up before you type a single character: it opens a new conversation session, checks whether your terminal uses a light or dark theme so answers render legibly, prepares the input box, and prints a short welcome message with a hint on how to get commands — all inside [runREPL](internal/cli/repl.go). If you haven't used Astrid before, the [Getting Started](getting-started.md) guide walks through installation and first login before you reach this point.
+If you run the tool without typing a question, and you're working directly in a terminal window (rather than piping input from another program), it opens this interactive session automatically. If you already know what you want to ask, you can still just type your question directly and get a single answer — see [Asking Questions](asking-questions.md) for that simpler flow.
 
-Everything that happens after that point — your keystrokes, the streaming answer text, terminal resizes, background lookups — flows through one central state object, the [replModel](internal/cli/repl.go), and one central router, [Update](internal/cli/repl.go), which decides whether a message means "resize the screen," "handle a keypress," "append streamed text," or "apply a workspace switch."
+## What It Feels Like
 
-## Typing and getting answers
+Once inside, the screen becomes a dedicated chat view. A status line at the top always shows which workspace you're currently working in and, if you've scoped the conversation to a specific pull request, which one that is. Below that is the running transcript of your conversation, and at the bottom is a text box where you type.
 
-You type into a normal-feeling input line at the bottom of the screen. Pressing Enter hands your text to [submit](internal/cli/repl.go), which trims stray whitespace, saves your line to history, clears the box, and scrolls the view down to the latest activity. From there your input takes one of two paths: if it starts with `/` it's treated as a command; otherwise it's logged as a new message and a fresh answer cycle begins.
+When you ask something, the answer streams in progressively — you see it being written in real time rather than waiting for the whole response to arrive at once — with a status indicator letting you know a reply is being generated. Answers are formatted for easy reading, with headings, lists, and emphasis rendered cleanly rather than as raw text.
 
+You can scroll back through earlier parts of the conversation at any time, and the input box remembers what you've typed before, so pressing the up and down arrows recalls earlier questions the way command-line history normally works.
 
+## What You Can Do Inside
 
-```mermaid
-flowchart TD
-    N1["func (m *replModel) submit() (tea.Model, tea.Cmd)"]
-    N2["RETURN_NODE"]
-    N3["func (m *replModel) runCommand(cmd string) (tea.Model, tea.Cmd)"]
-    N4["RETURN_NODE"]
-    N5["func (m *replModel) startTurn(query string) tea.Cmd"]
-    N6["RETURN_NODE"]
-    N7["Submit normal chat input"]
-    N10["Command prefix guard"]
-    N12["return m.runCommand(q)"]
-    N13["Record submission and prepare the REPL"]
-    N15["Empty input guard"]
-    N17["return m, nil"]
-    N18["q := strings.TrimSpace(escLeakPattern.ReplaceAllString(m.input.Value(), ''))"]
-    N19["Finish command processing"]
-    N21["Execute the matched slash command"]
-    N44["fields := strings.Fields(cmd)"]
-    N45["Keep the UI ticking"]
-    N47["Start the streamed backend request"]
-    N50["Prepare the UI and request payload"]
-    N52["Reset the current turn state"]
-    N7 -->|RETURN_STEP| N2
-    N12 -->|RETURN_STEP| N2
-    N10 -->|BRANCH_TRUE_CASE| N12
-    N10 -->|BRANCH_FALSE_CASE| N7
-    N13 -->|COMPUTE_STEP| N10
-    N17 -->|RETURN_STEP| N2
-    N15 -->|BRANCH_TRUE_CASE| N17
-    N15 -->|BRANCH_FALSE_CASE| N13
-    N18 -->|COMPUTE_STEP| N15
-    N1 -->|COMPUTE_STEP| N18
-    N19 -->|RETURN_STEP| N4
-    N21 -->|COMPUTE_STEP| N19
-    N21 -->|RETURN_STEP| N4
-    N44 -->|COMPUTE_STEP| N21
-    N3 -->|COMPUTE_STEP| N44
-    N45 -->|RETURN_STEP| N6
-    N47 -->|COMPUTE_STEP| N45
-    N50 -->|COMPUTE_STEP| N47
-    N52 -->|COMPUTE_STEP| N50
-    N5 -->|COMPUTE_STEP| N52
+While chatting normally, you can also type a small set of special commands (each starting with `/`) to control the session itself:
 
-```
+- **Start a new conversation** — `/new` or `/reset` clears the current thread and begins fresh, useful when you want to change topics without old context carrying over.
+- **Switch workspaces** — `/workspace` (or `/ws`) on its own opens a list of your available workspaces to choose from; adding a workspace name switches directly to it. See [Managing Workspaces](managing-workspaces.md) for more on what a workspace represents.
+- **Scope the conversation to a pull request** — `/pr` opens a list of pull requests you can pick from; `/pr` followed by a GitHub pull request link scopes the conversation to that specific PR; `/pr clear` removes that scope. If a link doesn't look like a valid GitHub PR URL, or points to a PR that isn't ready yet, you're told clearly what went wrong instead of the request silently failing.
+- **See available commands** — `/help` prints a quick reminder of everything above.
+- **Leave the session** — `/exit` or `/quit` ends the conversation and returns you to your regular terminal. Pressing Ctrl+D while the input box is empty does the same thing.
 
+Switching workspaces or changing the pull request scope automatically starts a new conversation thread, since the context you're asking about has changed. If a workspace switch can't be saved for some reason, the session keeps your previous workspace active rather than leaving things in a half-changed state, and lets you know what happened.
 
+## Staying In Control While an Answer Is Streaming
 
-That second path is where the "conversation" feeling comes from. [startTurn](internal/cli/repl.go) cancels any answer still in flight, shows a "thinking…" status, and sends your question off in the background while streaming the reply back piece by piece — so you watch the answer build up in real time rather than waiting for it all at once. Ctrl+C or Esc during that streaming stops the current answer early, and Enter is ignored mid-stream so you can't accidentally interrupt or edit while a response is arriving, all handled in [handleKey](internal/cli/repl.go). More detail on the kinds of questions you can ask this way is covered in [Asking Questions](asking-questions.md).
+If a response is still being generated and you'd rather not wait for it, pressing Ctrl+C or Esc cancels it partway through. The transcript notes that the reply was cancelled, and you're free to ask something else immediately. While an answer is streaming, the input box is locked from editing so you don't accidentally start typing into a response mid-flight — normal typing resumes as soon as the current turn finishes.
 
-## Slash commands
+## Getting Set Up
 
-Any line starting with `/` is routed by [runCommand](internal/cli/repl.go) instead of being sent as a question:
+Interactive mode uses the same workspace and account setup as the rest of the tool. If you haven't logged in or chosen a workspace yet, the tool walks you through that before the chat session opens — see [Logging In](logging-in.md) for details on connecting your account, and [Configuration](configuration.md) for how your settings (like your default workspace or API address) are stored and reused between sessions.
 
-- `/exit` or `/quit` — closes the session.
-- `/help` — prints the built-in help text into the transcript.
-- `/new` or `/reset` — clears the current conversation and starts fresh, via [newConversation](internal/cli/repl.go).
-- `/pr` — with no argument, opens a picker of your pull requests; with `clear`, drops the active PR scope; with a URL or ID, validates and applies that specific PR.
-- `/workspace` or `/ws` — with a name, switches straight to that workspace; with no argument, opens a workspace picker.
-
-Anything else typed with a leading `/` gets a friendly "unknown command" note rather than being silently ignored. The full list of commands, including ones available outside interactive mode, is catalogued in the [Command Reference](command-reference.md).
-
-## Switching workspaces and pull requests mid-conversation
-
-Typing `/workspace` with no name, or `/pr` with no argument, opens an on-screen picker rather than requiring you to remember exact names. Inside the workspace picker, arrow keys move the highlighted row, Enter confirms your choice and immediately switches context, and Escape backs out without changing anything — all handled in [handlePickerKey](internal/cli/repl.go). The pull request picker works the same way, with one extra safeguard: [handlePRPickerKey](internal/cli/repl.go) checks whether a highlighted PR review is actually ready before letting you select it, showing a readable status message if it isn't. Behind the scenes, resolving a typed workspace name checks it against both its short slug and its display name via [switchWorkspaceCmd](internal/cli/repl.go), and resolving a pasted PR URL validates it's a real, ready pull request in your current workspace via [setPRCmd](internal/cli/repl.go). For a deeper look at what workspaces and PR scoping mean day-to-day, see [Managing Workspaces](managing-workspaces.md).
-
-## Everyday conveniences
-
-The session feels forgiving in small but important ways, all coordinated through [handleKey](internal/cli/repl.go):
-
-- **Up/Down arrows** step backward and forward through everything you've typed in the session — but only when no answer is currently streaming.
-- **Page Up/Page Down** scroll through the transcript without touching your draft input.
-- **Ctrl+D** on an empty, idle input line quits the session cleanly.
-- Stray escape sequences that sometimes leak into pasted text are automatically stripped from what you type by [sanitizeInput](internal/cli/repl.go).
-
-## Leaving the session
-
-Typing `/exit`, `/quit`, or pressing Ctrl+D on an empty prompt ends the program the same way, returning a normal success code once the session closes via [runREPL](internal/cli/repl.go). If you haven't set up your account or default configuration yet, [Logging In](logging-in.md) and [Configuration](configuration.md) cover what needs to be in place before interactive mode has a workspace to talk to.
+For a broader overview of everything the tool can do — both inside and outside interactive mode — see the [Command Reference](command-reference.md), or start from [Getting Started](getting-started.md) if you're setting things up for the first time.
 
