@@ -1,23 +1,42 @@
 # Getting Started
 
-## Getting Started
+Welcome! This guide walks you through installing the CLI and taking your first few actions with it — no engineering background required.
 
-Welcome! This tool — called **abstr** on the command line — lets you chat with the Astrid assistant right from your terminal: ask questions, get instant answers, and manage which "workspace" (project/account) you're working in.
+## What is this tool?
 
-### 1. Installing the tool
+The command-line tool you'll be using is called **abstr** — a compact program for chatting with the Abstraction service ("Astrid") right from your terminal. Under the hood it's a single compiled program built from the top-level entry point in [main](cmd/abstr/main.go), which simply hands off to a [Main](internal/cli/root.go) that decides what you're asking it to do.
 
-Once installed, you run everything through a single command-line program. The program's very first job, when you launch it, is to hand off your typed command to a central dispatcher, using the [main](cmd/abstr/main.go) which passes along whatever you typed and exits with the right status when it's done.
+## Installing and setting up
 
-### 2. Logging in (one-time setup)
+`abstr` is one small program (the CLI application package is literally described as being for "configuring access to the Abstraction service, selecting workspaces, and running ask/review workflows") — once you have the binary, there's nothing else to install. The very first time you run it with no arguments and no saved settings, it will offer to walk you through setup itself rather than making you edit files by hand — that's the job of the [bootstrapAPIKey](internal/cli/env.go), which opens your account's settings page in a browser and asks you to paste in an access key. If you just want to see everything the tool can do without running anything, running it with `-h` prints a full [printUsage](internal/cli/root.go) listing every command and flag.
 
-Before you can ask questions, you need to connect the tool to your account. Typing `abstr login` kicks off the [runLogin](internal/cli/login.go), which walks you through the whole process automatically:
+Settings are kept in a small file the tool manages for you — by default in your home directory — resolved automatically by [Path](internal/config/config.go), so you never need to create or find this file yourself. You can also point it at a different file by passing `-config <path>`.
 
-- It loads any settings you already have saved, and figures out which server to talk to.
-- If you don't have an API key yet, it opens your web browser to the account settings page for you and asks you to paste in a key, using the [bootstrapAPIKey](internal/cli/env.go) — it even gives you three attempts if you mistype or paste the wrong thing.
-- Once your key is confirmed, it asks which workspace you'd like to use — if your account only has one, it's picked automatically, and if you have several, the [pickWorkspace](internal/cli/env.go) shows you a numbered list to choose from.
-- Finally, it saves everything to a local settings file so you don't have to log in again next time.
+## Your first run: logging in
 
-Here's what that whole first-time setup looks like under the hood, from typing the command to being logged in.
+The easiest way to get going is simply to run:
+
+```
+abstr login
+```
+
+This is the guided setup path, driven by [runLogin](internal/cli/login.go): it loads (or creates) your settings, works out which server to talk to, walks you through getting an access key if you don't already have one, lets you pick which workspace you want to use, and then saves everything so you never have to repeat the process. For more detail on this flow, see [Logging In](logging-in.md).
+
+## Picking a workspace
+
+If your account has more than one workspace, `abstr` won't guess — [pickWorkspace](internal/cli/env.go) lists every workspace you have access to, marks your account's default, and asks you to choose a number. If you only have one workspace, it's selected for you automatically. You can revisit or change this choice at any time with `abstr workspace`, handled by [runWorkspace](internal/cli/workspace.go). Full details live in [Managing Workspaces](managing-workspaces.md).
+
+## Asking your first question
+
+Once you're logged in, just type your question after the command:
+
+```
+abstr how do I deploy to staging?
+```
+
+This is handled end-to-end by [runAsk](internal/cli/ask.go), which figures out what you're asking — a direct question, piped input, or nothing at all yet — through [resolveQuery](internal/cli/ask.go), makes sure your login and workspace are ready via [ensureConfigured](internal/cli/env.go), and then either answers immediately or opens an interactive session. You can also pipe a question in instead of typing it directly, e.g. `echo "question" | abstr`. See [Asking Questions](asking-questions.md) for everything this supports.
+
+Here's how a first-time run flows from the moment you type `abstr` through setup and into your answer session.
 
 
 
@@ -25,138 +44,140 @@ Here's what that whole first-time setup looks like under the hood, from typing t
 flowchart TD
     N1["func Main(args []string) int"]
     N2["RETURN_NODE"]
-    N3["func runLogin(ctx context.Context, args []string) int"]
+    N3["func runAsk(ctx context.Context, args []string) int"]
     N4["RETURN_NODE"]
-    N5["func runAsk(ctx context.Context, args []string) int"]
+    N5["func ensureConfigured(ctx context.Context, opts runOptions, interactive bool) (*appEnv, error)"]
     N6["RETURN_NODE"]
-    N7["Run the default ask flow"]
-    N9["Arguments present?"]
-    N11["switch args[0]"]
-    N12["Version output"]
-    N15["Help output"]
-    N18["return runConfig(args[1:])"]
-    N19["return runWorkspace(ctx, args[1:])"]
-    N20["return runLogin(ctx, args[1:])"]
-    N21["Initialize shared context"]
-    N23["return exitOK"]
-    N24["r.Info('Logged in. Config saved to ' + cfg.FilePath())"]
-    N25["Handle save error"]
-    N27["return exitRuntime"]
-    N28["r.Error('save config: ' + err.Error())"]
-    N29["cfg.Workspace = ws"]
-    N30["Handle workspace selection error"]
-    N32["return exitRuntime"]
-    N33["r.Error(err.Error())"]
-    N34["cfg.APIKey = key
-ws, err := pickWorkspace(ctx, apiclient.New(baseURL, key), r)"]
-    N35["Handle authentication error"]
-    N37["return exitAuth"]
-    N38["r.Error(err.Error())"]
-    N39["r := newRenderer()
-key, err := bootstrapAPIKey(ctx, r, baseURL)"]
-    N40["Apply API URL override"]
-    N42["baseURL = apiURL
-cfg.APIBaseURL = apiURL"]
-    N43["baseURL := cfg.BaseURLResolved()"]
-    N44["Handle config load error"]
-    N46["return exitRuntime"]
-    N47["fmt.Fprintln(os.Stderr, 'abstr: ' + err.Error())"]
-    N48["cfg, err := config.Load(configPath)"]
-    N49["Validate command-line flags"]
-    N51["return exitUsage"]
-    N52["fs := flag.NewFlagSet('abstr login', flag.ContinueOnError)
-fs.SetOutput(os.Stderr)
-var configPath string
-var apiURL string
-fs.StringVar(&configPath, 'config', '', 'config file path')
-fs.StringVar(&apiURL, 'api-url', '', 'API base URL')"]
-    N53["Dispatch execution mode"]
-    N59["Initialize the CLI environment"]
-    N64["Extract the query"]
-    N69["Validate command-line input"]
-    N77["Prepare the flag parser"]
-    N7 -->|RETURN_STEP| N2
-    N12 -->|RETURN_STEP| N2
-    N11 -->|case "version", "-v", "--version"| N12
-    N15 -->|RETURN_STEP| N2
-    N11 -->|case "help", "-h", "--help"| N15
-    N18 -->|RETURN_STEP| N2
-    N11 -->|case "config"| N18
-    N19 -->|RETURN_STEP| N2
-    N11 -->|case "workspace", "ws"| N19
+    N7["func runREPL(env *appEnv, initialPR string) int"]
+    N8["RETURN_NODE"]
+    N9["Run the default ask flow"]
+    N11["Arguments present?"]
+    N13["switch args[0]"]
+    N14["Version output"]
+    N17["Help output"]
+    N20["return runConfig(args[1:])"]
+    N21["return runWorkspace(ctx, args[1:])"]
+    N22["return runLogin(ctx, args[1:])"]
+    N23["Initialize shared context"]
+    N25["Dispatch execution mode"]
+    N31["Initialize the CLI environment"]
+    N36["Extract the query"]
+    N41["Validate command-line input"]
+    N49["Prepare the flag parser"]
+    N51["return &appEnv{
+    cfg: cfg,
+    client: client,
+    render: r,
+    workspace: workspace,
+}, nil"]
+    N52["Resolve missing workspace interactively"]
+    N64["Apply workspace override"]
+    N67["workspace := cfg.WorkspaceResolved()"]
+    N68["client := apiclient.New(baseURL, apiKey)"]
+    N69["Ensure an API key exists"]
+    N80["r := newRenderer()"]
+    N81["Apply API URL override"]
+    N85["Load configuration"]
+    N89["return exitOK"]
+    N90["Run the terminal session with failure handling"]
+    N94["m := &replModel{
+    env: env,
+    sub: make(chan tea.Msg, 256),
+    md: md,
+    input: ti,
+    sessionID: sessionID,
+    activePR: initialPR,
+}
+m.entries = []transcriptEntry{transcriptEntry{
+    entrySystem,
+    'Chatting with Astrid. Type /help for commands, /exit to quit.',
+}}"]
+    N95["ti.Placeholder = 'Ask Astrid…  (/help, /exit)'
+ti.ShowLineNumbers = false
+ti.CharLimit = 8192
+ti.SetHeight(inputHeight)
+ti.Focus()"]
+    N96["Keep the input area visually plain"]
+    N98["ti.FocusedStyle.Prompt = userStyle
+ti.BlurredStyle.Prompt = userStyle"]
+    N99["Show the prompt only on the first line"]
+    N101["sessionID, _ := uuidutil.New()
+md := render.NewMDRenderer(render.HasDarkBackground(), 0)
+ti := textarea.New()
+ti.Prompt = inputPrompt"]
+    N9 -->|RETURN_STEP| N2
+    N14 -->|RETURN_STEP| N2
+    N13 -->|case "version", "-v", "--version"| N14
+    N17 -->|RETURN_STEP| N2
+    N13 -->|case "help", "-h", "--help"| N17
     N20 -->|RETURN_STEP| N2
-    N11 -->|case "login"| N20
-    N9 -->|BRANCH_TRUE_CASE| N11
-    N9 -->|BRANCH_FALSE_CASE| N7
-    N21 -->|COMPUTE_STEP| N9
-    N1 -->|COMPUTE_STEP| N21
-    N23 -->|RETURN_STEP| N4
-    N24 -->|COMPUTE_STEP| N23
-    N27 -->|RETURN_STEP| N4
-    N28 -->|COMPUTE_STEP| N27
-    N25 -->|BRANCH_TRUE_CASE| N28
-    N25 -->|BRANCH_FALSE_CASE| N24
-    N29 -->|COMPUTE_STEP| N25
-    N32 -->|RETURN_STEP| N4
-    N33 -->|COMPUTE_STEP| N32
-    N30 -->|BRANCH_TRUE_CASE| N33
-    N30 -->|BRANCH_FALSE_CASE| N29
-    N34 -->|COMPUTE_STEP| N30
-    N37 -->|RETURN_STEP| N4
-    N38 -->|COMPUTE_STEP| N37
-    N35 -->|BRANCH_TRUE_CASE| N38
-    N35 -->|BRANCH_FALSE_CASE| N34
-    N39 -->|COMPUTE_STEP| N35
-    N42 -->|COMPUTE_STEP| N39
-    N40 -->|BRANCH_TRUE_CASE| N42
-    N40 -->|BRANCH_FALSE_CASE| N39
-    N43 -->|COMPUTE_STEP| N40
-    N46 -->|RETURN_STEP| N4
-    N47 -->|COMPUTE_STEP| N46
-    N44 -->|BRANCH_TRUE_CASE| N47
-    N44 -->|BRANCH_FALSE_CASE| N43
-    N48 -->|COMPUTE_STEP| N44
-    N51 -->|RETURN_STEP| N4
-    N49 -->|BRANCH_TRUE_CASE| N51
-    N49 -->|BRANCH_FALSE_CASE| N48
-    N52 -->|COMPUTE_STEP| N49
-    N3 -->|COMPUTE_STEP| N52
-    N53 -->|RETURN_STEP| N6
-    N59 -->|RETURN_STEP| N6
-    N59 -->|BRANCH_FALSE_CASE| N53
-    N64 -->|RETURN_STEP| N6
-    N64 -->|BRANCH_FALSE_CASE| N59
+    N13 -->|case "config"| N20
+    N21 -->|RETURN_STEP| N2
+    N13 -->|case "workspace", "ws"| N21
+    N22 -->|RETURN_STEP| N2
+    N13 -->|case "login"| N22
+    N11 -->|BRANCH_TRUE_CASE| N13
+    N11 -->|BRANCH_FALSE_CASE| N9
+    N23 -->|COMPUTE_STEP| N11
+    N1 -->|COMPUTE_STEP| N23
+    N25 -->|RETURN_STEP| N4
+    N31 -->|RETURN_STEP| N4
+    N31 -->|BRANCH_FALSE_CASE| N25
+    N31 -->|FUNCTION_CALL| N5
+    N6 -->|COMPUTE_STEP| N31
+    N36 -->|RETURN_STEP| N4
+    N36 -->|BRANCH_FALSE_CASE| N31
+    N41 -->|RETURN_STEP| N4
+    N41 -->|BRANCH_FALSE_CASE| N36
+    N49 -->|COMPUTE_STEP| N41
+    N3 -->|COMPUTE_STEP| N49
+    N51 -->|RETURN_STEP| N6
+    N52 -->|COMPUTE_STEP| N51
+    N52 -->|BRANCH_FALSE_CASE| N51
+    N52 -->|RETURN_STEP| N6
+    N64 -->|COMPUTE_STEP| N52
+    N64 -->|BRANCH_FALSE_CASE| N52
+    N67 -->|COMPUTE_STEP| N64
+    N68 -->|COMPUTE_STEP| N67
+    N69 -->|COMPUTE_STEP| N68
     N69 -->|RETURN_STEP| N6
-    N69 -->|BRANCH_FALSE_CASE| N64
-    N77 -->|COMPUTE_STEP| N69
-    N5 -->|COMPUTE_STEP| N77
+    N69 -->|BRANCH_FALSE_CASE| N68
+    N80 -->|COMPUTE_STEP| N69
+    N81 -->|COMPUTE_STEP| N80
+    N81 -->|BRANCH_FALSE_CASE| N80
+    N85 -->|RETURN_STEP| N6
+    N85 -->|BRANCH_FALSE_CASE| N81
+    N5 -->|COMPUTE_STEP| N85
+    N89 -->|RETURN_STEP| N8
+    N90 -->|RETURN_STEP| N8
+    N90 -->|BRANCH_FALSE_CASE| N89
+    N94 -->|COMPUTE_STEP| N90
+    N95 -->|COMPUTE_STEP| N94
+    N96 -->|COMPUTE_STEP| N95
+    N98 -->|COMPUTE_STEP| N96
+    N99 -->|COMPUTE_STEP| N98
+    N101 -->|COMPUTE_STEP| N99
+    N7 -->|COMPUTE_STEP| N101
 
 ```
 
 
 
-### 3. Checking your setup anytime
+## Going interactive
 
-If you're ever unsure what's configured, `abstr config` shows you a quick summary — your settings file location, your active workspace, and a safely-hidden version of your API key — via the [runConfig](internal/cli/configcmd.go). If you just want to see which file your settings live in, `abstr config path` does that directly.
+If you run `abstr` with no question typed (and you're at a normal terminal, not a script), it drops you into a live back-and-forth session instead of a one-shot answer — powered by [runREPL](internal/cli/repl.go), which sets up a scrollable conversation view and hands control to an interactive terminal program. Inside that session you can use slash commands like `/pr`, `/workspace`, `/new`, `/help`, and `/exit`. The full rundown is in [Interactive Mode (REPL)](interactive-mode.md).
 
-### 4. Asking your first question
+## Checking your setup
 
-You've got two easy ways to ask something, both handled by the [runAsk](internal/cli/ask.go):
+Not sure what's configured right now? Run:
 
-- **Ask directly**: type your question right after the command, e.g. `abstr "What does this pull request change?"`.
-- **Pipe it in**: send text from another tool straight into abstr, and it will read that as your question.
+```
+abstr config show
+```
 
-Behind the scenes, the tool figures out where your question is coming from — typed directly, piped in, or "none yet" — using the [resolveQuery](internal/cli/ask.go), and makes sure your setup (workspace, key, connection) is ready via the [ensureConfigured](internal/cli/env.go) before sending anything. For a single question, the [runImmediate](internal/cli/ask.go) prints a nicely formatted, styled reply if you're in a normal terminal window, or plain clean text if you're piping the output somewhere else.
+This is handled by [runConfig](internal/cli/configcmd.go), which prints your settings file location, active workspace, a safely redacted version of your API key, and the server address it will use — without ever printing your full key. Details on every setting are in [Configuration](configuration.md).
 
-### 5. Chatting interactively
+## Where to go next
 
-If you just run `abstr` with no question at all in a normal terminal window, it opens a full interactive chat session instead — a scrollable, styled conversation window — powered by the [runREPL](internal/cli/repl.go), which sets up the chat display, remembers your conversation, and keeps the session running until you exit.
-
-### 6. Switching or checking workspaces
-
-If you belong to more than one workspace, `abstr workspace` (or the shorter `abstr ws`) lets you list them all or switch the active one, through the [runWorkspace](internal/cli/workspace.go) — for example `abstr workspace list` shows every workspace with your current one marked, and `abstr workspace use <name>` switches to a different one by name.
-
-### 7. Getting help anytime
-
-Typing `abstr help` (or `-h` / `--help`) prints a full summary of everything the tool can do — asking questions, piping input, logging in, managing workspaces, and checking configuration — straight from the built-in [printUsage](internal/cli/root.go). Typing `abstr version` (or `-v` / `--version`) simply prints which version you're running, and both of these, along with all the commands above, are routed by the same central [Main](internal/cli/root.go) that reads your very first word after `abstr` and sends you to the right place.
+That's everything you need to get moving — log in, pick a workspace, and start asking questions. For a complete list of every command and flag, see the [Command Reference](command-reference.md).
 
