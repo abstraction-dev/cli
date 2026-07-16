@@ -69,7 +69,10 @@ func finish(ctx context.Context, uc *updateCheck) {
 
 	// Whenever a check actually ran, stamp the timestamp — even on failure — so a
 	// persistent network error doesn't make every subsequent run re-check.
-	// Reload from disk first so we don't clobber fields the task wrote.
+	// Reload from disk first so we don't clobber fields the task wrote, and so
+	// the decision below sees the latest persisted state rather than the config
+	// we loaded at process start.
+	cfg := uc.cfg
 	if res.ran {
 		if fresh, err := config.Load(uc.cfg.FilePath()); err == nil {
 			fresh.LastUpdateCheck = nowUTC()
@@ -77,21 +80,22 @@ func finish(ctx context.Context, uc *updateCheck) {
 				fresh.LatestSeen = res.tag
 			}
 			_ = fresh.Save()
+			cfg = fresh
 		}
 	}
 
 	// Decide against the newest tag we know about: this run's result if we have
-	// one, else what the previous check cached.
+	// one, else what the (freshly reloaded) config has cached.
 	newest := res.tag
 	if newest == "" {
-		newest = uc.cfg.LatestSeen
+		newest = cfg.LatestSeen
 	}
 	if newest == "" || !selfupdate.IsNewer(version, newest) {
 		return
 	}
 
 	r := newRenderer()
-	if uc.cfg.AutoUpgrade {
+	if cfg.AutoUpgrade {
 		applyAuto(ctx, r, newest)
 		return
 	}

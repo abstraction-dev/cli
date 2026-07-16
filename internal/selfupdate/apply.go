@@ -226,7 +226,17 @@ func extractBinary(archive []byte) ([]byte, error) {
 			return nil, err
 		}
 		if path.Base(hdr.Name) == binaryName && hdr.Typeflag == tar.TypeReg {
-			return io.ReadAll(io.LimitReader(tr, maxAssetBytes))
+			// Read one byte past the cap to detect an oversized (or maliciously
+			// inflated) entry rather than silently truncating it — the archive
+			// checksum only covers the compressed bytes, not this payload.
+			bin, err := io.ReadAll(io.LimitReader(tr, maxAssetBytes+1))
+			if err != nil {
+				return nil, err
+			}
+			if len(bin) > maxAssetBytes {
+				return nil, fmt.Errorf("extracted binary exceeds %d bytes", maxAssetBytes)
+			}
+			return bin, nil
 		}
 	}
 	return nil, fmt.Errorf("archive did not contain a %q binary", binaryName)
