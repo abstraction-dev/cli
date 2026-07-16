@@ -61,7 +61,8 @@ Interactive commands: `/pr <url|number>`, `/pr clear`, `/workspace [slug]`,
 `abstr upgrade` downloads the latest release, verifies it against the published
 `sha256sums.txt`, and atomically replaces the running binary in place. Installs
 owned by a package manager (Homebrew, Nix) are left untouched — upgrade those
-with the manager instead.
+with the manager instead. Self-upgrade is supported on macOS and Linux; on
+Windows, download the latest release manually (or use WSL).
 
 On a normal interactive run, `abstr` also checks for a newer release in the
 background (at most once every 24h). By default it just prints a one-line notice;

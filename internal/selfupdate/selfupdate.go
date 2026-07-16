@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/semver"
 )
@@ -19,6 +20,10 @@ const repoSlug = "abstraction-dev/cli"
 // binaryName is the released binary/basename (matches .goreleaser.yaml).
 const binaryName = "abstr"
 
+// resolveTimeout is a backstop on the latest-version lookup so a stalled
+// connection can't hang the command; callers also pass a context deadline.
+const resolveTimeout = 10 * time.Second
+
 // LatestVersion resolves the newest published tag (e.g. "v1.3.0") without hitting
 // the GitHub API: a HEAD on releases/latest 302-redirects to the tagged release,
 // and the tag is the final path segment of the Location header. This avoids the
@@ -26,6 +31,7 @@ const binaryName = "abstr"
 func LatestVersion(ctx context.Context) (string, error) {
 	// Do not follow the redirect — we want to read its Location, not the page.
 	client := &http.Client{
+		Timeout: resolveTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

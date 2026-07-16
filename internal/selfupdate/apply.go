@@ -2,7 +2,6 @@ package selfupdate
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -17,13 +16,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"github.com/minio/selfupdate"
+	"time"
 )
 
-// maxAssetBytes caps how much we will download for a release asset, as a guard
+// maxAssetBytes caps how much we will read for a release asset, as a guard
 // against a pathological response. The binary is a few MB.
 const maxAssetBytes = 200 << 20 // 200 MiB
+
+// downloadTimeout bounds a single asset download end-to-end.
+const downloadTimeout = 2 * time.Minute
+
+// downloadClient fetches release assets. Its Timeout is a backstop; callers also
+// pass a context deadline.
+var downloadClient = &http.Client{Timeout: downloadTimeout}
 
 // ErrUnmanagedInstall is returned when the running binary lives somewhere we
 // must not overwrite — a package-manager prefix (Homebrew, Nix) or a directory
@@ -32,7 +37,12 @@ var ErrUnmanagedInstall = errors.New("binary is not in a self-updatable location
 
 // Apply downloads the release archive for tag, verifies it against the
 // published sha256sums.txt, and atomically replaces the running executable.
+// Self-upgrade is Unix-only; on Windows, install manually or use WSL.
 func Apply(ctx context.Context, tag string) error {
+	if runtime.GOOS == "windows" {
+		return errors.New("self-upgrade is not supported on Windows — download the latest release manually or use WSL")
+	}
+
 	exe, err := resolveExecutable()
 	if err != nil {
 		return err
@@ -57,19 +67,12 @@ func Apply(ctx context.Context, tag string) error {
 		return err
 	}
 
-	binary, err := extractBinary(archive, asset)
+	binary, err := extractBinary(archive)
 	if err != nil {
 		return err
 	}
 
-	if err := selfupdate.Apply(bytes.NewReader(binary), selfupdate.Options{TargetPath: exe}); err != nil {
-		// selfupdate rolls the old binary back in on failure; surface the cause.
-		if rerr := selfupdate.RollbackError(err); rerr != nil {
-			return fmt.Errorf("update failed and rollback also failed: %v (rollback: %v)", err, rerr)
-		}
-		return fmt.Errorf("apply update: %w", err)
-	}
-	return nil
+	return replaceBinary(exe, binary)
 }
 
 // resolveExecutable returns the real on-disk path of the running binary, with
@@ -107,23 +110,59 @@ func checkWritable(exe string) error {
 	return nil
 }
 
-// assetName is the release archive for the current platform. Windows ships as a
-// zip; every other platform ships as tar.gz (see .goreleaser.yaml).
-func assetName() string {
-	ext := "tar.gz"
-	if runtime.GOOS == "windows" {
-		ext = "zip"
+// replaceBinary installs newBinary at target atomically: it writes to a temp
+// file in the same directory (so os.Rename stays on one filesystem and is
+// atomic), preserves the current file's permissions, then renames over the
+// target. The old binary is never removed until the rename succeeds, so a
+// failure leaves the existing install untouched — no rollback needed. Replacing
+// a running binary is safe on Unix: the process keeps its open inode.
+func replaceBinary(target string, newBinary []byte) error {
+	perm := os.FileMode(0o755)
+	if info, err := os.Stat(target); err == nil {
+		perm = info.Mode().Perm()
 	}
-	return fmt.Sprintf("%s_%s_%s.%s", binaryName, runtime.GOOS, runtime.GOARCH, ext)
+
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, ".abstr-new-*")
+	if err != nil {
+		return fmt.Errorf("create temp binary: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Remove the temp file if we don't successfully rename it into place.
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(newBinary); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write new binary: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod new binary: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close new binary: %w", err)
+	}
+
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("replace %s: %w", target, err)
+	}
+	return nil
 }
 
-// download fetches a URL fully into memory, bounded by maxAssetBytes.
+// assetName is the release archive for the current platform (see
+// .goreleaser.yaml). Every supported platform ships as tar.gz.
+func assetName() string {
+	return fmt.Sprintf("%s_%s_%s.tar.gz", binaryName, runtime.GOOS, runtime.GOARCH)
+}
+
+// download fetches a URL fully into memory, erroring if the response exceeds
+// maxAssetBytes rather than silently truncating.
 func download(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -131,16 +170,27 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %s", resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes))
+
+	// Read one byte past the cap so we can distinguish "exactly at cap" from
+	// "over cap" and fail loudly on an oversized (or unbounded) response.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxAssetBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxAssetBytes)
+	}
+	return body, nil
 }
 
 // verifyChecksum confirms archive's sha256 matches the entry for asset in a
-// sha256sums.txt manifest ("<hex>  <filename>" per line).
+// sha256sums.txt manifest. Lines are "<hex>  <filename>"; a leading '*' on the
+// filename (sha256sum's binary-mode output) is tolerated.
 func verifyChecksum(archive, sums []byte, asset string) error {
 	var want string
 	for _, line := range strings.Split(string(sums), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == asset {
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == asset {
 			want = fields[0]
 			break
 		}
@@ -157,21 +207,9 @@ func verifyChecksum(archive, sums []byte, asset string) error {
 	return nil
 }
 
-// extractBinary pulls the abstr binary out of the release archive. The binary
-// sits at the archive root; on Windows it is abstr.exe.
-func extractBinary(archive []byte, asset string) ([]byte, error) {
-	want := binaryName
-	if runtime.GOOS == "windows" {
-		want = binaryName + ".exe"
-	}
-
-	if strings.HasSuffix(asset, ".zip") {
-		return extractFromZip(archive, want)
-	}
-	return extractFromTarGz(archive, want)
-}
-
-func extractFromTarGz(archive []byte, want string) ([]byte, error) {
+// extractBinary pulls the abstr binary out of the release tarball. It sits at
+// the archive root.
+func extractBinary(archive []byte) ([]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, err
@@ -187,27 +225,9 @@ func extractFromTarGz(archive []byte, want string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if path.Base(hdr.Name) == want && hdr.Typeflag == tar.TypeReg {
+		if path.Base(hdr.Name) == binaryName && hdr.Typeflag == tar.TypeReg {
 			return io.ReadAll(io.LimitReader(tr, maxAssetBytes))
 		}
 	}
-	return nil, fmt.Errorf("archive did not contain a %q binary", want)
-}
-
-func extractFromZip(archive []byte, want string) ([]byte, error) {
-	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
-	if err != nil {
-		return nil, err
-	}
-	for _, f := range zr.File {
-		if path.Base(f.Name) == want {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer rc.Close()
-			return io.ReadAll(io.LimitReader(rc, maxAssetBytes))
-		}
-	}
-	return nil, fmt.Errorf("archive did not contain a %q binary", want)
+	return nil, fmt.Errorf("archive did not contain a %q binary", binaryName)
 }

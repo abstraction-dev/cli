@@ -58,6 +58,7 @@ func runConfigSet(cfg *config.Config, args []string) int {
 	}
 	key, value := args[0], args[1]
 
+	var canonical string // the normalized value we actually stored
 	switch key {
 	case "auto_upgrade":
 		b, err := strconv.ParseBool(value)
@@ -66,6 +67,7 @@ func runConfigSet(cfg *config.Config, args []string) int {
 			return exitUsage
 		}
 		cfg.AutoUpgrade = b
+		canonical = strconv.FormatBool(b)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown config key: "+key)
 		return exitUsage
@@ -75,7 +77,7 @@ func runConfigSet(cfg *config.Config, args []string) int {
 		fmt.Fprintln(os.Stderr, "abstr: "+err.Error())
 		return exitRuntime
 	}
-	fmt.Printf("%s = %s\n", key, value)
+	fmt.Printf("%s = %s\n", key, canonical)
 	return exitOK
 }
 

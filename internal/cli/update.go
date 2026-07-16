@@ -20,11 +20,17 @@ const updateCheckInterval = 24 * time.Hour
 // updateCheckTimeout bounds the background check so it never lingers.
 const updateCheckTimeout = 3 * time.Second
 
+// checkResult is what a background release check reports back to finish.
+type checkResult struct {
+	ran bool   // the network check actually executed this run
+	tag string // resolved latest tag; "" when the check was skipped or failed
+}
+
 // updateCheck is a background release check started alongside the main task. Its
 // result is consumed once, at the end of the run, by finish.
 type updateCheck struct {
 	cfg    *config.Config
-	result chan string // resolved latest tag, or "" if not checked/failed
+	result chan checkResult
 }
 
 // startUpdateCheck kicks off a throttled, concurrent release check. It returns a
@@ -33,10 +39,10 @@ type updateCheck struct {
 // cached LatestSeen. The check runs concurrently with the user's task so its
 // latency is hidden behind work that is already happening.
 func startUpdateCheck(ctx context.Context, cfg *config.Config) *updateCheck {
-	uc := &updateCheck{cfg: cfg, result: make(chan string, 1)}
+	uc := &updateCheck{cfg: cfg, result: make(chan checkResult, 1)}
 
 	if !updatesEnabled() || !checkDue(cfg) {
-		uc.result <- ""
+		uc.result <- checkResult{ran: false}
 		return uc
 	}
 
@@ -45,10 +51,12 @@ func startUpdateCheck(ctx context.Context, cfg *config.Config) *updateCheck {
 		defer cancel()
 		tag, err := selfupdate.LatestVersion(cctx)
 		if err != nil {
-			uc.result <- "" // fail silent; background checks never nag on error
+			// Fail silent — background checks never nag on error — but report
+			// that the check ran so its timestamp still gets stamped.
+			uc.result <- checkResult{ran: true, tag: ""}
 			return
 		}
-		uc.result <- tag
+		uc.result <- checkResult{ran: true, tag: tag}
 	}()
 	return uc
 }
@@ -57,21 +65,24 @@ func startUpdateCheck(ctx context.Context, cfg *config.Config) *updateCheck {
 // upgrade notice or (when auto-upgrade is enabled) applies the update in place.
 // It is safe to call once per run, after the main task completes.
 func finish(ctx context.Context, uc *updateCheck) {
-	latest := <-uc.result
+	res := <-uc.result
 
-	// Persist the cache when we actually resolved something new this run. Reload
-	// from disk first so we don't clobber fields the task wrote (e.g. workspace).
-	if latest != "" {
+	// Whenever a check actually ran, stamp the timestamp — even on failure — so a
+	// persistent network error doesn't make every subsequent run re-check.
+	// Reload from disk first so we don't clobber fields the task wrote.
+	if res.ran {
 		if fresh, err := config.Load(uc.cfg.FilePath()); err == nil {
 			fresh.LastUpdateCheck = nowUTC()
-			fresh.LatestSeen = latest
+			if res.tag != "" {
+				fresh.LatestSeen = res.tag
+			}
 			_ = fresh.Save()
 		}
 	}
 
 	// Decide against the newest tag we know about: this run's result if we have
 	// one, else what the previous check cached.
-	newest := latest
+	newest := res.tag
 	if newest == "" {
 		newest = uc.cfg.LatestSeen
 	}
@@ -143,6 +154,10 @@ func runUpgrade(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 
+	// Bound the whole operation so a stalled connection can't hang the command.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
 	r := newRenderer()
 
 	latest, err := selfupdate.LatestVersion(ctx)
@@ -158,7 +173,11 @@ func runUpgrade(ctx context.Context, args []string) int {
 	}
 
 	if checkOnly {
-		r.Info(fmt.Sprintf("A new abstr (%s) is available (current: %s).", latest, version))
+		if isDev {
+			r.Info(fmt.Sprintf("Running a dev build; latest release is %s.", latest))
+		} else {
+			r.Info(fmt.Sprintf("A new abstr (%s) is available (current: %s).", latest, version))
+		}
 		return exitOK
 	}
 

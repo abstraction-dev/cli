@@ -42,6 +42,12 @@ func TestVerifyChecksum(t *testing.T) {
 		t.Fatalf("verifyChecksum matching: %v", err)
 	}
 
+	// sha256sum's binary-mode output prefixes the filename with '*'.
+	binModeManifest := []byte(hex.EncodeToString(sum[:]) + "  *" + asset + "\n")
+	if err := verifyChecksum(archive, binModeManifest, asset); err != nil {
+		t.Fatalf("verifyChecksum binary-mode (*filename): %v", err)
+	}
+
 	if err := verifyChecksum([]byte("tampered"), manifest, asset); err == nil {
 		t.Error("verifyChecksum should fail on mismatch")
 	}
@@ -58,7 +64,7 @@ func TestExtractFromTarGz(t *testing.T) {
 		"abstr":     want,
 	})
 
-	got, err := extractBinary(archive, "abstr_linux_amd64.tar.gz")
+	got, err := extractBinary(archive)
 	if err != nil {
 		t.Fatalf("extractBinary: %v", err)
 	}
@@ -69,7 +75,7 @@ func TestExtractFromTarGz(t *testing.T) {
 
 func TestExtractFromTarGzMissing(t *testing.T) {
 	archive := makeTarGz(t, map[string][]byte{"README.md": []byte("docs")})
-	if _, err := extractBinary(archive, "abstr_linux_amd64.tar.gz"); err == nil {
+	if _, err := extractBinary(archive); err == nil {
 		t.Error("extractBinary should fail when binary absent")
 	}
 }
