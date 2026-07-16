@@ -26,6 +26,14 @@ type Config struct {
 	Workspace  string `json:"workspace,omitempty"`
 	APIBaseURL string `json:"api_base_url,omitempty"`
 
+	// AutoUpgrade, when true, applies a newer release automatically instead of
+	// only printing a notice. See internal/selfupdate.
+	AutoUpgrade bool `json:"auto_upgrade,omitempty"`
+	// LastUpdateCheck is when the background update check last ran (RFC3339).
+	LastUpdateCheck string `json:"last_update_check,omitempty"`
+	// LatestSeen is the newest release tag the last check observed (e.g. v1.3.0).
+	LatestSeen string `json:"latest_seen,omitempty"`
+
 	path string // where this was loaded from / will be saved to
 }
 

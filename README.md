@@ -53,6 +53,21 @@ Interactive commands: `/pr <url|number>`, `/pr clear`, `/workspace [slug]`,
 | `abstr workspace use <slug\|name>` | Switch the current workspace. |
 | `abstr workspace` | Interactive workspace picker. |
 | `abstr config path` / `abstr config show` | Inspect configuration. |
+| `abstr config set auto_upgrade <true\|false>` | Toggle automatic upgrades. |
+| `abstr upgrade` / `abstr upgrade --check` | Update to the latest release (or just check). |
+
+### Staying up to date
+
+`abstr upgrade` downloads the latest release, verifies it against the published
+`sha256sums.txt`, and atomically replaces the running binary in place. Installs
+owned by a package manager (Homebrew, Nix) are left untouched — upgrade those
+with the manager instead.
+
+On a normal interactive run, `abstr` also checks for a newer release in the
+background (at most once every 24h). By default it just prints a one-line notice;
+enable `auto_upgrade` to have it apply updates automatically. The check is
+skipped for local dev builds, under `$CI`, when output isn't a terminal, or when
+`ABSTR_NO_UPDATE_CHECK` is set.
 
 ### Configuration & precedence
 
