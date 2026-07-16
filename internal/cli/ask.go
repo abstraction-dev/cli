@@ -59,6 +59,11 @@ func runAsk(ctx context.Context, args []string) int {
 		return exitCodeFor(err)
 	}
 
+	// Check for a newer release concurrently with the task; the notice or
+	// auto-upgrade is emitted once the task completes.
+	uc := startUpdateCheck(ctx, env.cfg)
+	defer finish(ctx, uc)
+
 	if mode == modeInteractive {
 		return runREPL(env, opts.pr)
 	}
