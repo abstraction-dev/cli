@@ -12,10 +12,10 @@ import (
 	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // inputHeight is the number of visible rows in the input box. It wraps long
@@ -47,8 +47,8 @@ var (
 
 // escLeakPattern matches terminal capability-query RESPONSES (OSC 10/11 color
 // reports, cursor-position and device-attribute reports). Some terminals answer
-// these queries right as a program acquires the terminal, and with older
-// input parsers the response can leak into the text input. We strip any such
+// these queries right as a program acquires the terminal, and a response that
+// isn't parsed as an event lands in the text input instead. We strip any such
 // fragment defensively so it never corrupts a query or command.
 var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[cuR]`)
 
@@ -58,23 +58,14 @@ var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[
 // Ctrl+D or /exit quits. Up/Down
 // navigate an in-memory history for this run.
 func runREPL(env *appEnv, initialPR string) int {
-	// Detect the terminal background ONCE, before the full-screen program takes
-	// over — querying it later would leak the response into the input.
-	md := render.NewMDRenderer(render.HasDarkBackground(), 0)
-
 	ti := textarea.New()
 	ti.Prompt = inputPrompt
-	ti.SetPromptFunc(lipgloss.Width(inputPrompt), func(line int) string {
-		if line == 0 {
+	ti.SetPromptFunc(lipgloss.Width(inputPrompt), func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
 			return inputPrompt
 		}
 		return ""
 	})
-	ti.FocusedStyle.Prompt = userStyle
-	ti.BlurredStyle.Prompt = userStyle
-	// No active-line background highlight — keep the plain look the
-	// single-line input had.
-	ti.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ti.Placeholder = "Ask Astrid…  (/help, /exit)"
 	ti.ShowLineNumbers = false
 	ti.CharLimit = 8192
@@ -83,20 +74,40 @@ func runREPL(env *appEnv, initialPR string) int {
 
 	// sessionID is left empty: the first question starts a conversation and the
 	// backend names it, which the REPL then holds onto (see conversationMsg).
+	//
+	// The dark palette is a placeholder. Querying the terminal from here would
+	// leak the response into the input, so the program asks for the background
+	// itself and restyles when the answer arrives (see tea.BackgroundColorMsg).
 	m := &replModel{
 		env:      env,
 		sub:      make(chan tea.Msg, 256),
-		md:       md,
+		md:       render.NewMDRenderer(true, 0),
 		input:    ti,
 		activePR: initialPR,
 	}
+	m.applyBackground(true)
 	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
 
-	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
+	if _, err := tea.NewProgram(m).Run(); err != nil {
 		fmt.Fprintln(env.render.Err, "abstr: "+err.Error())
 		return exitRuntime
 	}
 	return exitOK
+}
+
+// applyBackground fits the markdown renderer and the input box's styling to the
+// terminal background. Light/dark is a single explicit choice made here, not
+// resolved per style.
+func (m *replModel) applyBackground(dark bool) {
+	m.md.SetDark(dark)
+
+	st := textarea.DefaultStyles(dark)
+	st.Focused.Prompt = userStyle
+	st.Blurred.Prompt = userStyle
+	// No active-line background highlight — keep the plain look the
+	// single-line input had.
+	st.Focused.CursorLine = lipgloss.NewStyle()
+	m.input.SetStyles(st)
 }
 
 // Messages delivered over m.sub by the ask goroutine.
@@ -211,7 +222,7 @@ func waitForMsg(sub chan tea.Msg) tea.Cmd {
 }
 
 func (m *replModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, waitForMsg(m.sub), m.resolveCurrentNameCmd())
+	return tea.Batch(textarea.Blink, tea.RequestBackgroundColor, waitForMsg(m.sub), m.resolveCurrentNameCmd())
 }
 
 func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -220,7 +231,14 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize(msg.Width, msg.Height)
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.BackgroundColorMsg:
+		// The answer to Init's query: restyle for the real background and redraw
+		// whatever was already rendered under the placeholder palette.
+		m.applyBackground(msg.IsDark())
+		m.refreshCurrent()
+		return m, nil
+
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
@@ -297,7 +315,7 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *replModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modePicking:
 		return m.handlePickerKey(key)
@@ -307,15 +325,15 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleChatPickerKey(key)
 	}
 
-	switch key.Type {
-	case tea.KeyCtrlR:
+	switch key.String() {
+	case "ctrl+r":
 		// Reverse-search's shell mnemonic: reach back for an earlier conversation.
 		if m.streaming {
 			return m, nil
 		}
 		return m, m.loadChatPickerCmd()
 
-	case tea.KeyCtrlC:
+	case "ctrl+c":
 		if m.streaming {
 			m.status = "cancelling…"
 			if m.cancel != nil {
@@ -328,13 +346,13 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.histIdx = len(m.history)
 		return m, nil
 
-	case tea.KeyCtrlD:
+	case "ctrl+d":
 		if !m.streaming && m.input.Value() == "" {
 			return m, tea.Quit
 		}
 		return m, nil
 
-	case tea.KeyEsc:
+	case "esc":
 		if m.streaming {
 			m.status = "cancelling…"
 			if m.cancel != nil {
@@ -344,24 +362,24 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyEnter:
+	case "enter":
 		if m.streaming {
 			return m, nil
 		}
 		return m.submit()
 
-	case tea.KeyUp:
+	case "up":
 		if !m.streaming {
 			m.historyPrev()
 		}
 		return m, nil
-	case tea.KeyDown:
+	case "down":
 		if !m.streaming {
 			m.historyNext()
 		}
 		return m, nil
 
-	case tea.KeyPgUp, tea.KeyPgDown:
+	case "pgup", "pgdown":
 		var cmd tea.Cmd
 		m.vp, cmd = m.vp.Update(key)
 		return m, cmd
@@ -386,24 +404,24 @@ func (m *replModel) sanitizeInput() {
 	}
 }
 
-func (m *replModel) handlePickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.Type {
-	case tea.KeyUp:
+func (m *replModel) handlePickerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "up":
 		if m.pickerIdx > 0 {
 			m.pickerIdx--
 			m.refreshPicker()
 		}
-	case tea.KeyDown:
+	case "down":
 		if m.pickerIdx < len(m.pickerItems)-1 {
 			m.pickerIdx++
 			m.refreshPicker()
 		}
-	case tea.KeyEnter:
+	case "enter":
 		w := m.pickerItems[m.pickerIdx]
 		m.mode = modeNormal
 		m.input.Focus()
 		m.applySwitch(w.Slug, w.Name)
-	case tea.KeyEsc, tea.KeyCtrlC:
+	case "esc", "ctrl+c":
 		m.mode = modeNormal
 		m.input.Focus()
 		m.addEntry(entrySystem, "workspace selection cancelled")
@@ -411,19 +429,19 @@ func (m *replModel) handlePickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *replModel) handlePRPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.Type {
-	case tea.KeyUp:
+func (m *replModel) handlePRPickerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "up":
 		if m.prIdx > 0 {
 			m.prIdx--
 			m.refreshPRPicker()
 		}
-	case tea.KeyDown:
+	case "down":
 		if m.prIdx < len(m.prItems)-1 {
 			m.prIdx++
 			m.refreshPRPicker()
 		}
-	case tea.KeyEnter:
+	case "enter":
 		pr := m.prItems[m.prIdx]
 		m.mode = modeNormal
 		m.input.Focus()
@@ -432,7 +450,7 @@ func (m *replModel) handlePRPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.applyPRScope(pr.PRURL, prLabel(pr))
-	case tea.KeyEsc, tea.KeyCtrlC:
+	case "esc", "ctrl+c":
 		m.mode = modeNormal
 		m.input.Focus()
 		m.addEntry(entrySystem, "PR selection cancelled")
@@ -440,19 +458,19 @@ func (m *replModel) handlePRPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *replModel) handleChatPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.Type {
-	case tea.KeyUp:
+func (m *replModel) handleChatPickerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "up":
 		if m.chatIdx > 0 {
 			m.chatIdx--
 			m.refreshChatPicker()
 		}
-	case tea.KeyDown:
+	case "down":
 		if m.chatIdx < len(m.chatItems)-1 {
 			m.chatIdx++
 			m.refreshChatPicker()
 		}
-	case tea.KeyEnter:
+	case "enter":
 		chat := m.chatItems[m.chatIdx]
 		m.mode = modeNormal
 		// The history is a second request, and the transcript is replayed when it
@@ -461,7 +479,7 @@ func (m *replModel) handleChatPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		m.addEntry(entrySystem, "loading "+chatLabel(chat)+"…")
 		return m, m.loadChatCmd(chat)
-	case tea.KeyEsc, tea.KeyCtrlC:
+	case "esc", "ctrl+c":
 		m.mode = modeNormal
 		m.input.Focus()
 		m.addEntry(entrySystem, "conversation selection cancelled")
@@ -912,14 +930,19 @@ func (m *replModel) resize(w, h int) {
 		vpHeight = 1
 	}
 	if !m.ready {
-		m.vp = viewport.New(w, vpHeight)
+		m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(vpHeight))
 		m.ready = true
 	} else {
-		m.vp.Width = w
-		m.vp.Height = vpHeight
+		m.vp.SetWidth(w)
+		m.vp.SetHeight(vpHeight)
 	}
 	m.input.SetWidth(w - 4)
 	m.md.Resize(w - 2)
+	m.refreshCurrent()
+}
+
+// refreshCurrent redraws whichever view is on screen.
+func (m *replModel) refreshCurrent() {
 	switch m.mode {
 	case modePicking:
 		m.refreshPicker()
@@ -1096,7 +1119,16 @@ func (m *replModel) rule() string {
 	return faintStyle.Render(strings.Repeat("─", m.width))
 }
 
-func (m *replModel) View() string {
+// View renders the frame, along with the terminal features it needs: a
+// full-screen transcript and mouse reporting for scrolling it.
+func (m *replModel) View() tea.View {
+	v := tea.NewView(m.content())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m *replModel) content() string {
 	if !m.ready {
 		return "loading…"
 	}
