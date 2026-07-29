@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func newHistoryModel() *replModel {
@@ -116,6 +118,204 @@ func TestPRStatusLabel(t *testing.T) {
 		if got := prStatusLabel(in); got != want {
 			t.Fatalf("prStatusLabel(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// exchange is one stored exchange as GET /api/chats/{slug} delivers it.
+func exchange(raw string) apiclient.ChatMessage {
+	return apiclient.ChatMessage{Messages: []byte(raw)}
+}
+
+func TestResumeConversationReplaysTranscript(t *testing.T) {
+	m := &replModel{input: textarea.New(), sessionID: "fresh-uuid"}
+	m.entries = []transcriptEntry{{entrySystem, "banner"}}
+
+	m.resumeConversation(apiclient.ChatWithMessages{
+		Chat: apiclient.Chat{Slug: "chat-1", Title: "Where is auth handled", Type: "DEFAULT"},
+		Messages: []apiclient.ChatMessage{
+			exchange(`[{"role":"user","content":[{"type":"text","text":"where is auth handled"}]},
+			           {"role":"assistant","content":[{"type":"text","text":"In internal/auth."}]}]`),
+			exchange(`[{"role":"user","content":[{"type":"text","text":"and the api keys"}]},
+			           {"role":"tool","tool_call_id":"t1","content":[{"type":"text","text":"rows"}]},
+			           {"role":"assistant","content":[{"type":"text","text":"Hashed with bcrypt."}]}]`),
+		},
+	})
+
+	// The conversation's slug is the session id from here on — that is what makes the
+	// next question continue this conversation rather than start one.
+	if m.sessionID != "chat-1" {
+		t.Fatalf("session id: got %q, want chat-1", m.sessionID)
+	}
+	if m.activePR != "" {
+		t.Fatalf("a workspace conversation must not set a PR scope, got %q", m.activePR)
+	}
+
+	want := []transcriptEntry{
+		{entryUser, "where is auth handled"},
+		{entryAnswer, "In internal/auth."},
+		{entryUser, "and the api keys"},
+		{entryAnswer, "Hashed with bcrypt."},
+		{entrySystem, "resumed conversation: Where is auth handled"},
+	}
+	if len(m.entries) != len(want) {
+		t.Fatalf("expected %d entries, got %d: %+v", len(want), len(m.entries), m.entries)
+	}
+	for i := range want {
+		if m.entries[i] != want[i] {
+			t.Fatalf("entry %d: got %+v, want %+v", i, m.entries[i], want[i])
+		}
+	}
+
+	// Replayed questions are recallable with ↑, like the ones typed this run.
+	if len(m.history) != 2 || m.history[0] != "where is auth handled" || m.histIdx != 2 {
+		t.Fatalf("input history: %+v idx=%d", m.history, m.histIdx)
+	}
+}
+
+// A resumed PR conversation restores its scope, so the status bar reports what the
+// answers are grounded in and /new keeps that grounding.
+func TestResumeConversationRestoresPRScope(t *testing.T) {
+	m := &replModel{input: textarea.New()}
+
+	m.resumeConversation(apiclient.ChatWithMessages{
+		Chat: apiclient.Chat{Slug: "chat-2", Title: "Review", Type: apiclient.ChatTypePR, DiffReportID: "42", PRNumber: "123"},
+	})
+
+	if m.activePR != "42" {
+		t.Fatalf("pr scope: got %q, want the diff report id 42", m.activePR)
+	}
+	if last := m.entries[len(m.entries)-1]; last.text != "resumed conversation: #123 · Review" {
+		t.Fatalf("resume note: got %q", last.text)
+	}
+}
+
+// An exchange that can't be read costs its turns, not the resume.
+func TestResumeConversationReportsUnreadableExchange(t *testing.T) {
+	m := &replModel{input: textarea.New()}
+
+	m.resumeConversation(apiclient.ChatWithMessages{
+		Chat: apiclient.Chat{Slug: "chat-3", Title: "Broken"},
+		Messages: []apiclient.ChatMessage{
+			exchange(`not json`),
+			exchange(`[{"role":"user","content":[{"type":"text","text":"still here"}]}]`),
+		},
+	})
+
+	if m.entries[0] != (transcriptEntry{entryUser, "still here"}) {
+		t.Fatalf("expected the readable turn to survive, got %+v", m.entries)
+	}
+	last := m.entries[len(m.entries)-1]
+	if last.kind != entrySystem || !strings.Contains(last.text, "could not be replayed") {
+		t.Fatalf("expected a note about the unreadable exchange, got %+v", last)
+	}
+}
+
+// /new lets go of the conversation being held. Holding none is what makes the next
+// question start one, which the backend then names.
+func TestNewConversationLeavesCurrentConversation(t *testing.T) {
+	m := &replModel{input: textarea.New(), sessionID: "chat-1"}
+	m.entries = []transcriptEntry{{entryUser, "earlier question"}}
+
+	m.newConversation()
+
+	if m.sessionID != "" {
+		t.Fatalf("expected no conversation to be held, got %q", m.sessionID)
+	}
+	if len(m.entries) != 0 {
+		t.Fatalf("expected a cleared transcript, got %+v", m.entries)
+	}
+}
+
+// The backend names a conversation on its first question and the REPL adopts that
+// name, so every later question continues it instead of starting another.
+func TestConversationMsgIsAdopted(t *testing.T) {
+	m := &replModel{input: textarea.New(), sub: make(chan tea.Msg, 1)}
+
+	if _, cmd := m.Update(conversationMsg("chat-9")); cmd == nil {
+		t.Fatal("expected the sub channel to be re-armed")
+	}
+	if m.sessionID != "chat-9" {
+		t.Fatalf("session id: got %q, want chat-9", m.sessionID)
+	}
+
+	// A later turn on the same conversation reports the same slug; adopting it again
+	// must not disturb the transcript.
+	m.entries = []transcriptEntry{{entryUser, "a question"}}
+	m.Update(conversationMsg("chat-9"))
+
+	if len(m.entries) != 1 || m.sessionID != "chat-9" {
+		t.Fatalf("re-adopting changed state: entries=%+v session=%q", m.entries, m.sessionID)
+	}
+}
+
+// The picker opens on the conversation being held, so the list says where you are.
+func TestOpenChatPickerPreselectsActiveConversation(t *testing.T) {
+	m := &replModel{input: textarea.New(), sessionID: "chat-2"}
+	items := []apiclient.Chat{{Slug: "chat-1"}, {Slug: "chat-2"}, {Slug: "chat-3"}}
+
+	m.openChatPicker(chatPickerLoadedMsg{items: items})
+
+	if m.mode != modePickingChat {
+		t.Fatalf("expected the chat picker mode, got %v", m.mode)
+	}
+	if m.chatIdx != 1 {
+		t.Fatalf("expected the active conversation preselected, got index %d", m.chatIdx)
+	}
+
+	// A conversation started here matches nothing in the list, so it starts at the top.
+	fresh := &replModel{input: textarea.New(), sessionID: "fresh-uuid"}
+	fresh.openChatPicker(chatPickerLoadedMsg{items: items})
+	if fresh.chatIdx != 0 {
+		t.Fatalf("expected index 0 for an unlisted conversation, got %d", fresh.chatIdx)
+	}
+}
+
+func TestOpenChatPickerEmptyAndError(t *testing.T) {
+	empty := &replModel{input: textarea.New()}
+	empty.openChatPicker(chatPickerLoadedMsg{})
+	if empty.mode != modeNormal {
+		t.Fatal("an empty list must not enter picker mode")
+	}
+	if empty.entries[0].kind != entrySystem {
+		t.Fatalf("expected a system note, got %+v", empty.entries[0])
+	}
+
+	failed := &replModel{input: textarea.New()}
+	failed.openChatPicker(chatPickerLoadedMsg{err: errors.New("boom")})
+	if failed.mode != modeNormal {
+		t.Fatal("a failed load must not enter picker mode")
+	}
+	if failed.entries[0].kind != entryError {
+		t.Fatalf("expected an error entry, got %+v", failed.entries[0])
+	}
+}
+
+func TestChatLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		chat apiclient.Chat
+		want string
+	}{
+		{"title", apiclient.Chat{Slug: "0123456789ab", Title: "Where is auth handled"}, "Where is auth handled"},
+		{"untitled falls back to the slug", apiclient.Chat{Slug: "0123456789ab"}, "01234567…"},
+		{"pr chat is labelled by its pull request", apiclient.Chat{Title: "Review", Type: apiclient.ChatTypePR, PRNumber: "123"}, "#123 · Review"},
+		{"pr chat without a number", apiclient.Chat{Title: "Review", Type: apiclient.ChatTypePR}, "Review"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chatLabel(tc.chat); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChatWhen(t *testing.T) {
+	if when := chatWhen(apiclient.Chat{CreatedAt: "2026-07-20T10:11:12Z"}); when == "" {
+		t.Fatal("expected a formatted timestamp")
+	}
+	if got := chatWhen(apiclient.Chat{CreatedAt: "not a time"}); got != "" {
+		t.Fatalf("expected an unparseable timestamp to be left out, got %q", got)
 	}
 }
 

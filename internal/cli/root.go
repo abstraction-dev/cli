@@ -57,6 +57,11 @@ Flags:
   -config <path>          Config file (default ~/.abstr.json).
   -h                      Show this help.
 
-Interactive commands: /pr [url], /pr clear, /workspace [slug], /new, /help, /exit
+Interactive commands: /chats, /pr [url], /pr clear, /workspace [slug], /new, /help, /exit
+Interactive keys:     ctrl+r resume a conversation, ctrl+c cancel, ctrl+d quit
+
+Conversations are shared with the web app: /chats (or ctrl+r) lists this workspace's
+conversations — the ones started here and the ones started in the app — and picking
+one continues it.
 `)
 }

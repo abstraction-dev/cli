@@ -11,7 +11,6 @@ import (
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
-	"github.com/abstraction-dev/cli/internal/uuidutil"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -59,8 +58,6 @@ var escLeakPattern = regexp.MustCompile(`\]1[01];rgb:[0-9a-fA-F/]+|\[\??[0-9;]*[
 // Ctrl+D or /exit quits. Up/Down
 // navigate an in-memory history for this run.
 func runREPL(env *appEnv, initialPR string) int {
-	sessionID, _ := uuidutil.New()
-
 	// Detect the terminal background ONCE, before the full-screen program takes
 	// over — querying it later would leak the response into the input.
 	md := render.NewMDRenderer(render.HasDarkBackground(), 0)
@@ -84,13 +81,14 @@ func runREPL(env *appEnv, initialPR string) int {
 	ti.SetHeight(inputHeight)
 	ti.Focus()
 
+	// sessionID is left empty: the first question starts a conversation and the
+	// backend names it, which the REPL then holds onto (see conversationMsg).
 	m := &replModel{
-		env:       env,
-		sub:       make(chan tea.Msg, 256),
-		md:        md,
-		input:     ti,
-		sessionID: sessionID,
-		activePR:  initialPR,
+		env:      env,
+		sub:      make(chan tea.Msg, 256),
+		md:       md,
+		input:    ti,
+		activePR: initialPR,
 	}
 	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
 
@@ -106,6 +104,10 @@ type (
 	deltaMsg  string
 	statusMsg string
 	doneMsg   struct{ err error }
+	// conversationMsg carries the conversation the backend ran this turn in, which
+	// every later question is sent under. On the first question of a conversation it
+	// is the only place its id appears.
+	conversationMsg string
 )
 
 // tickMsg advances the in-transcript spinner/elapsed-timer while a turn streams.
@@ -135,6 +137,14 @@ type (
 		label string // friendly label for the transcript
 		err   error
 	}
+	chatPickerLoadedMsg struct {
+		items []apiclient.Chat
+		err   error
+	}
+	chatLoadedMsg struct {
+		chat apiclient.ChatWithMessages
+		err  error
+	}
 )
 
 type replMode int
@@ -143,6 +153,7 @@ const (
 	modeNormal replMode = iota
 	modePicking
 	modePickingPR
+	modePickingChat
 )
 
 type entryKind int
@@ -191,6 +202,8 @@ type replModel struct {
 	pickerIdx   int
 	prItems     []apiclient.PRReview
 	prIdx       int
+	chatItems   []apiclient.Chat
+	chatIdx     int
 }
 
 func waitForMsg(sub chan tea.Msg) tea.Cmd {
@@ -224,6 +237,9 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, tickCmd()
 
+	case conversationMsg:
+		m.sessionID = string(msg)
+		return m, waitForMsg(m.sub)
 	case statusMsg:
 		m.status = string(msg)
 		m.refresh()
@@ -261,6 +277,19 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyPRScope(msg.pr, msg.label)
 		}
 		return m, nil
+	case chatPickerLoadedMsg:
+		m.openChatPicker(msg)
+		return m, nil
+	case chatLoadedMsg:
+		if msg.err != nil {
+			m.addEntry(entryError, msg.err.Error())
+		} else {
+			m.resumeConversation(msg.chat)
+		}
+		// Typing is allowed again either way: on a failure the conversation being
+		// held is still the one questions go to.
+		m.input.Focus()
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -274,9 +303,18 @@ func (m *replModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePickerKey(key)
 	case modePickingPR:
 		return m.handlePRPickerKey(key)
+	case modePickingChat:
+		return m.handleChatPickerKey(key)
 	}
 
 	switch key.Type {
+	case tea.KeyCtrlR:
+		// Reverse-search's shell mnemonic: reach back for an earlier conversation.
+		if m.streaming {
+			return m, nil
+		}
+		return m, m.loadChatPickerCmd()
+
 	case tea.KeyCtrlC:
 		if m.streaming {
 			m.status = "cancelling…"
@@ -402,6 +440,35 @@ func (m *replModel) handlePRPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *replModel) handleChatPickerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.Type {
+	case tea.KeyUp:
+		if m.chatIdx > 0 {
+			m.chatIdx--
+			m.refreshChatPicker()
+		}
+	case tea.KeyDown:
+		if m.chatIdx < len(m.chatItems)-1 {
+			m.chatIdx++
+			m.refreshChatPicker()
+		}
+	case tea.KeyEnter:
+		chat := m.chatItems[m.chatIdx]
+		m.mode = modeNormal
+		// The history is a second request, and the transcript is replayed when it
+		// arrives (see resumeConversation), so the input stays blurred until then —
+		// a question typed into the gap would go to the conversation being left.
+		m.input.Blur()
+		m.addEntry(entrySystem, "loading "+chatLabel(chat)+"…")
+		return m, m.loadChatCmd(chat)
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.mode = modeNormal
+		m.input.Focus()
+		m.addEntry(entrySystem, "conversation selection cancelled")
+	}
+	return m, nil
+}
+
 func (m *replModel) submit() (tea.Model, tea.Cmd) {
 	q := strings.TrimSpace(escLeakPattern.ReplaceAllString(m.input.Value(), ""))
 	if q == "" {
@@ -431,6 +498,8 @@ func (m *replModel) runCommand(cmd string) (tea.Model, tea.Cmd) {
 	case "/new", "/reset":
 		m.newConversation()
 		m.addEntry(entrySystem, "started a new conversation")
+	case "/chats", "/resume":
+		return m, m.loadChatPickerCmd()
 	case "/pr":
 		switch {
 		case len(fields) < 2:
@@ -480,8 +549,9 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	client := m.env.client
 	go func() {
 		err := client.AskStream(ctx, req, apiclient.StreamHandlers{
-			OnOutput: func(t string) { sub <- deltaMsg(t) },
-			OnStatus: func(s string) { sub <- statusMsg(s) },
+			OnOutput:       func(t string) { sub <- deltaMsg(t) },
+			OnStatus:       func(s string) { sub <- statusMsg(s) },
+			OnConversation: func(slug string) { sub <- conversationMsg(slug) },
 		})
 		sub <- doneMsg{err: err}
 	}()
@@ -510,13 +580,59 @@ func (m *replModel) finishTurn(err error) {
 	m.refresh()
 }
 
-// newConversation resets the session id and flushes the transcript.
+// newConversation lets go of the current conversation and flushes the transcript.
+// Holding no conversation is what makes the next question start one — the backend
+// names it and the REPL adopts that name, the same way the first question of a run
+// does.
 func (m *replModel) newConversation() {
-	if id, err := uuidutil.New(); err == nil {
-		m.sessionID = id
-	}
+	m.sessionID = ""
 	m.entries = nil
 	m.refresh()
+}
+
+// resumeConversation makes a stored conversation the active one and replays it into
+// the transcript.
+//
+// The session id becomes the conversation's slug: the backend continues whatever
+// conversation the id names, so every question from here on lands in this one —
+// which is the same conversation the app shows. A PR conversation also restores its
+// scope, so the status bar says what the answers are grounded in and starting a new
+// conversation keeps that grounding.
+func (m *replModel) resumeConversation(loaded apiclient.ChatWithMessages) {
+	m.sessionID = loaded.Chat.Slug
+	m.activePR = loaded.Chat.DiffReportID
+	m.entries = nil
+
+	unreadable := 0
+	for _, msg := range loaded.Messages {
+		turns, err := msg.Turns()
+		if err != nil {
+			unreadable++
+			continue
+		}
+		for _, turn := range turns {
+			switch turn.Role {
+			case apiclient.TurnUser:
+				m.entries = append(m.entries, transcriptEntry{entryUser, turn.Text})
+				// Past questions join this run's input history, so ↑ recalls them the
+				// way it recalls the ones typed here.
+				m.history = append(m.history, turn.Text)
+			case apiclient.TurnAssistant:
+				m.entries = append(m.entries, transcriptEntry{entryAnswer, turn.Text})
+			}
+		}
+	}
+	m.histIdx = len(m.history)
+
+	m.addEntry(entrySystem, "resumed conversation: "+chatLabel(loaded.Chat))
+	if unreadable > 0 {
+		m.addEntry(entrySystem, fmt.Sprintf("%d earlier exchange(s) could not be replayed — the agent still has them", unreadable))
+	}
+	if m.ready {
+		// Land on the latest turn: a long conversation is read from the bottom, the
+		// same place a live answer arrives.
+		m.vp.GotoBottom()
+	}
 }
 
 func (m *replModel) applySwitch(slug, name string) {
@@ -574,6 +690,30 @@ func (m *replModel) openPRPicker(msg prPickerLoadedMsg) {
 	m.refreshPRPicker()
 }
 
+func (m *replModel) openChatPicker(msg chatPickerLoadedMsg) {
+	if msg.err != nil {
+		m.addEntry(entryError, msg.err.Error())
+		return
+	}
+	if len(msg.items) == 0 {
+		m.addEntry(entrySystem, "no earlier conversations in this workspace")
+		return
+	}
+	m.mode = modePickingChat
+	m.chatItems = msg.items
+	m.chatIdx = 0
+	// Start on the conversation already being held, if this is one; a conversation
+	// started here has an id no stored conversation carries, so nothing preselects.
+	for i, chat := range msg.items {
+		if chat.Slug == m.sessionID {
+			m.chatIdx = i
+			break
+		}
+	}
+	m.input.Blur()
+	m.refreshChatPicker()
+}
+
 // applyPRScope stores the chosen PR as the active scope and starts a fresh
 // conversation, so the new scope isn't mixed with prior turns.
 func (m *replModel) applyPRScope(pr, label string) {
@@ -629,6 +769,24 @@ func (m *replModel) loadPRPickerCmd() tea.Cmd {
 	return func() tea.Msg {
 		items, err := client.PRReviews(context.Background(), ws)
 		return prPickerLoadedMsg{items: items, err: err}
+	}
+}
+
+func (m *replModel) loadChatPickerCmd() tea.Cmd {
+	client, ws := m.env.client, m.env.workspace
+	return func() tea.Msg {
+		items, err := client.ListChats(context.Background(), ws)
+		return chatPickerLoadedMsg{items: items, err: err}
+	}
+}
+
+// loadChatCmd fetches the chosen conversation's stored history, which the transcript
+// is rebuilt from.
+func (m *replModel) loadChatCmd(chat apiclient.Chat) tea.Cmd {
+	client := m.env.client
+	return func() tea.Msg {
+		loaded, err := client.GetChat(context.Background(), chat.Slug)
+		return chatLoadedMsg{chat: loaded, err: err}
 	}
 }
 
@@ -767,6 +925,8 @@ func (m *replModel) resize(w, h int) {
 		m.refreshPicker()
 	case modePickingPR:
 		m.refreshPRPicker()
+	case modePickingChat:
+		m.refreshChatPicker()
 	default:
 		m.refresh()
 	}
@@ -878,6 +1038,47 @@ func (m *replModel) refreshPRPicker() {
 	m.vp.GotoTop()
 }
 
+func (m *replModel) refreshChatPicker() {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("Resume a conversation") + "\n\n")
+	for i, chat := range m.chatItems {
+		line := chatLabel(chat)
+		when := faintStyle.Render("  " + chatWhen(chat))
+		if i == m.chatIdx {
+			b.WriteString(selStyle.Render("❯ "+line) + when + "\n")
+		} else {
+			b.WriteString("  " + line + when + "\n")
+		}
+	}
+	b.WriteString("\n" + faintStyle.Render("↑/↓ select · enter confirm · esc cancel · /new starts a fresh one"))
+	m.vp.SetContent(b.String())
+	m.vp.GotoTop()
+}
+
+// chatLabel names a conversation in the picker: its title, prefixed with the pull
+// request it is scoped to. A conversation the backend hasn't summarized yet may have
+// no title, so its slug stands in — it is still resumable.
+func chatLabel(chat apiclient.Chat) string {
+	title := strings.TrimSpace(chat.Title)
+	if title == "" {
+		title = shortSlug(chat.Slug)
+	}
+	if chat.IsPR() && chat.PRNumber != "" {
+		return "#" + chat.PRNumber + " · " + title
+	}
+	return title
+}
+
+// chatWhen renders when a conversation started, in local time. An unparseable
+// timestamp is left out rather than guessed at.
+func chatWhen(chat apiclient.Chat) string {
+	started, err := time.Parse(time.RFC3339, chat.CreatedAt)
+	if err != nil {
+		return ""
+	}
+	return started.Local().Format("2006-01-02 15:04")
+}
+
 func (m *replModel) statusBar() string {
 	ws := m.wsName
 	if ws == "" {
@@ -905,23 +1106,30 @@ func (m *replModel) View() string {
 	if m.mode == modePickingPR {
 		return m.vp.View() + "\n" + faintStyle.Render("selecting pull request…") + "\n\n" + m.statusBar()
 	}
+	if m.mode == modePickingChat {
+		return m.vp.View() + "\n" + faintStyle.Render("selecting conversation…") + "\n\n" + m.statusBar()
+	}
 
 	// The animated status/spinner lives in the transcript itself (see
 	// spinnerLine), so this hint stays static regardless of streaming state.
-	hint := faintStyle.Render("enter send · ↑↓ history · pgup/pgdn/mouse scroll · esc cancel · ctrl+c clear · ctrl+d quit")
+	hint := faintStyle.Render("enter send · ↑↓ history · ctrl+r resume · pgup/pgdn/mouse scroll · esc cancel · ctrl+c clear · ctrl+d quit")
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
 	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
 }
 
 const replHelp = `commands:
+  /chats             resume an earlier conversation (also ctrl+r)
   /pr                open the pull request picker
   /pr <url>          scope to a pull request URL (must be a completed review)
   /pr clear          remove the PR scope
   /workspace [slug]  switch workspace (no arg = picker; validates access)
   /new               start a fresh conversation
   /help              show this help
-  /exit              quit (or press ctrl+d)`
+  /exit              quit (or press ctrl+d)
+
+Conversations are shared with the web app: what you start here is listed there,
+and what you start there can be resumed here.`
 
 func workspaceLabel(name, slug string) string {
 	if name == "" {
