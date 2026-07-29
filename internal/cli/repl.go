@@ -43,6 +43,10 @@ var (
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	labelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
 	selStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+	// selectedStyle marks mouse-selected transcript text. Reverse video is what
+	// terminals use for their own selections, and it inverts whatever colour the
+	// text already had rather than needing a palette that suits every case.
+	selectedStyle = lipgloss.NewStyle().Reverse(true)
 )
 
 // escLeakPattern matches terminal capability-query RESPONSES (OSC 10/11 color
@@ -192,7 +196,13 @@ type replModel struct {
 	width int
 
 	entries []transcriptEntry
-	wsName  string // resolved friendly name of the current workspace
+	// lines is the transcript as rendered, kept line by line so a mouse
+	// selection can be painted over it and copied out of it (see selection.go).
+	lines  []string
+	sel    selection
+	copied bool // the last selection reached the clipboard; shown in the hint
+
+	wsName string // resolved friendly name of the current workspace
 
 	history []string
 	histIdx int
@@ -241,11 +251,19 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseMsg:
-		// Mouse wheel scrolls the transcript.
+	case tea.MouseWheelMsg:
+		// The wheel scrolls the transcript. A selection is held in transcript
+		// coordinates, so scrolling moves it with the text rather than losing it.
 		var cmd tea.Cmd
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
+
+	case tea.MouseClickMsg:
+		return m.startSelection(tea.Mouse(msg))
+	case tea.MouseMotionMsg:
+		return m.extendSelection(tea.Mouse(msg))
+	case tea.MouseReleaseMsg:
+		return m.finishSelection()
 
 	case tickMsg:
 		if !m.streaming {
@@ -353,6 +371,9 @@ func (m *replModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "esc":
+		// Esc drops a selection as well as cancelling: with no terminal-drawn
+		// selection to click away from, this is the way to dismiss one.
+		m.clearSelection()
 		if m.streaming {
 			m.status = "cancelling…"
 			if m.cancel != nil {
@@ -605,6 +626,9 @@ func (m *replModel) finishTurn(err error) {
 func (m *replModel) newConversation() {
 	m.sessionID = ""
 	m.entries = nil
+	// The lines the selection pointed at are gone with the transcript.
+	m.sel = selection{}
+	m.copied = false
 	m.refresh()
 }
 
@@ -620,6 +644,9 @@ func (m *replModel) resumeConversation(loaded apiclient.ChatWithMessages) {
 	m.sessionID = loaded.Chat.Slug
 	m.activePR = loaded.Chat.DiffReportID
 	m.entries = nil
+	// A selection points at line numbers in the transcript being replaced.
+	m.sel = selection{}
+	m.copied = false
 
 	unreadable := 0
 	for _, msg := range loaded.Messages {
@@ -987,10 +1014,88 @@ func (m *replModel) refresh() {
 		}
 		b.WriteString(m.spinnerLine())
 	}
-	m.vp.SetContent(b.String())
+	m.lines = strings.Split(b.String(), "\n")
+	m.paint()
 	if stick {
 		m.vp.GotoBottom()
 	}
+}
+
+// paint pushes the transcript into the viewport with any selection highlighted.
+// It is the only place the viewport's content is set, so a redraw can be asked
+// for by a selection change alone, without re-rendering every entry.
+func (m *replModel) paint() {
+	m.vp.SetContent(strings.Join(paintSelection(m.lines, m.sel), "\n"))
+}
+
+// pointAt maps a screen position onto the transcript, reporting false when it
+// falls outside the transcript's part of the frame. The viewport starts at the
+// top of the frame, so the row is the offset into the visible window; adding
+// the scroll position turns it into a position in the transcript as a whole.
+func (m *replModel) pointAt(x, y int) (selPoint, bool) {
+	if m.mode != modeNormal || y < 0 || y >= m.vp.Height() {
+		return selPoint{}, false
+	}
+	return selPoint{line: m.vp.YOffset() + y, col: x}, true
+}
+
+func (m *replModel) startSelection(e tea.Mouse) (tea.Model, tea.Cmd) {
+	if e.Button != tea.MouseLeft {
+		return m, nil
+	}
+	p, ok := m.pointAt(e.X, e.Y)
+	if !ok {
+		// Pressing outside the transcript dismisses whatever was selected, the
+		// way clicking away from a selection does anywhere else.
+		m.clearSelection()
+		return m, nil
+	}
+	// Not active until the pointer actually moves: a bare click selects nothing.
+	m.sel = selection{anchor: p, focus: p, dragging: true}
+	m.copied = false
+	m.paint()
+	return m, nil
+}
+
+func (m *replModel) extendSelection(e tea.Mouse) (tea.Model, tea.Cmd) {
+	if !m.sel.dragging {
+		return m, nil
+	}
+	p, ok := m.pointAt(e.X, e.Y)
+	if !ok {
+		return m, nil
+	}
+	m.sel.focus = p
+	m.sel.active = p != m.sel.anchor
+	m.paint()
+	return m, nil
+}
+
+func (m *replModel) finishSelection() (tea.Model, tea.Cmd) {
+	if !m.sel.dragging {
+		return m, nil
+	}
+	m.sel.dragging = false
+
+	text := selectedText(m.lines, m.sel)
+	if text == "" {
+		m.clearSelection()
+		return m, nil
+	}
+	// The terminal never saw the drag, so it has nothing to put on the
+	// clipboard; OSC 52 is how the selection actually gets there.
+	m.copied = true
+	return m, tea.SetClipboard(text)
+}
+
+// clearSelection drops the selection and repaints if anything was showing.
+func (m *replModel) clearSelection() {
+	if m.sel == (selection{}) && !m.copied {
+		return
+	}
+	m.sel = selection{}
+	m.copied = false
+	m.paint()
 }
 
 // spinnerLine renders the animated "<frame> <status> (<elapsed>s)" line shown
@@ -1144,7 +1249,10 @@ func (m *replModel) content() string {
 
 	// The animated status/spinner lives in the transcript itself (see
 	// spinnerLine), so this hint stays static regardless of streaming state.
-	hint := faintStyle.Render("enter send · ↑↓ history · ctrl+r resume · pgup/pgdn/mouse scroll · esc cancel · ctrl+c clear · ctrl+d quit")
+	hint := faintStyle.Render("enter send · ↑↓ history · ctrl+r resume · pgup/pgdn/mouse scroll · drag to copy · esc cancel · ctrl+c clear · ctrl+d quit")
+	if m.copied {
+		hint = faintStyle.Render("copied the selection to the clipboard · esc clears it")
+	}
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
 	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()

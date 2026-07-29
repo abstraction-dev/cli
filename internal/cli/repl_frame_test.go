@@ -94,3 +94,71 @@ func TestREPLFrame(t *testing.T) {
 	}
 	_ = mm
 }
+
+// Dragging over the transcript selects text and copies it. The terminal cannot
+// do this for us while mouse reporting is on, so the whole path — press, drag,
+// release, clipboard — belongs to the program.
+func TestMouseDragSelectsAndCopies(t *testing.T) {
+	m := &replModel{
+		env:   &appEnv{workspace: "ws-abcdef123"},
+		sub:   make(chan tea.Msg, 8),
+		md:    render.NewMDRenderer(true, 0),
+		input: textarea.New(),
+	}
+	m.applyBackground(true)
+	m.resize(80, 24)
+	m.entries = []transcriptEntry{{entrySystem, "selectable transcript line"}}
+	m.refresh()
+
+	var mm tea.Model = m
+
+	// Press at column 0 of the first row, drag right, release.
+	mm, _ = mm.Update(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
+	if !m.sel.dragging || m.sel.active {
+		t.Fatalf("a press alone should start a drag but select nothing: %+v", m.sel)
+	}
+	mm, _ = mm.Update(tea.MouseMotionMsg{X: 10, Y: 0, Button: tea.MouseLeft})
+	if !m.sel.active {
+		t.Fatal("moving the pointer should make the selection active")
+	}
+	if out := m.View().Content; !strings.Contains(out, selectedStyle.Render("selectable")) {
+		t.Fatalf("selection not highlighted in the frame:\n%q", out)
+	}
+
+	_, cmd := mm.Update(tea.MouseReleaseMsg{X: 10, Y: 0, Button: tea.MouseLeft})
+	if m.sel.dragging {
+		t.Fatal("release should end the drag")
+	}
+	if cmd == nil {
+		t.Fatal("release should hand the selection to the clipboard")
+	}
+	if !m.copied || !strings.Contains(m.View().Content, "copied the selection") {
+		t.Fatalf("the copy should be reported in the hint line, copied=%v", m.copied)
+	}
+
+	// Esc dismisses it, since there is no terminal selection to click away from.
+	mm.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.sel.active || m.copied {
+		t.Fatalf("esc should clear the selection: %+v copied=%v", m.sel, m.copied)
+	}
+}
+
+// A bare click selects nothing and must not put anything on the clipboard.
+func TestMouseClickWithoutDragCopiesNothing(t *testing.T) {
+	m := &replModel{env: &appEnv{}, md: render.NewMDRenderer(true, 0), input: textarea.New()}
+	m.applyBackground(true)
+	m.resize(80, 24)
+	m.entries = []transcriptEntry{{entrySystem, "a line"}}
+	m.refresh()
+
+	var mm tea.Model = m
+	mm, _ = mm.Update(tea.MouseClickMsg{X: 2, Y: 0, Button: tea.MouseLeft})
+	_, cmd := mm.Update(tea.MouseReleaseMsg{X: 2, Y: 0, Button: tea.MouseLeft})
+
+	if cmd != nil {
+		t.Fatal("a click with no drag should not reach the clipboard")
+	}
+	if m.sel.active || m.copied {
+		t.Fatalf("nothing should be selected: %+v copied=%v", m.sel, m.copied)
+	}
+}
