@@ -112,10 +112,12 @@ func readPipedStdin() (bool, string) {
 func runImmediate(ctx context.Context, env *appEnv, query, pr string) int {
 	req := apiclient.AskRequest{Workspace: env.workspace, Question: query, PR: pr}
 
-	ans, err := env.client.AskBuffered(ctx, req)
+	// A one-shot never continues, so the conversation the reply names is not kept.
+	res, err := env.client.AskBuffered(ctx, req)
 	if err != nil {
 		return reportRunError(ctx, env, err)
 	}
+	ans := res.Answer
 
 	// Render markdown to ANSI on a terminal; keep raw markdown when piped so the
 	// output stays clean for downstream tools.

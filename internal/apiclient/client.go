@@ -81,24 +81,81 @@ func (c *Client) PRReviews(ctx context.Context, workspace string) ([]PRReview, e
 	return out.Reviews, nil
 }
 
-// AskBuffered runs one ask and returns the whole formatted answer.
-func (c *Client) AskBuffered(ctx context.Context, req AskRequest) (string, error) {
-	req.Stream = false
-	resp, err := c.postAsk(ctx, req)
+// ListChats lists the workspace's stored conversations, newest first. The backend
+// lists the ones a person browses — chats opened in the app and the ones the CLI
+// started — so both surfaces offer the same conversations.
+func (c *Client) ListChats(ctx context.Context, workspace string) ([]Chat, error) {
+	u := c.BaseURL + "/api/workspaces/" + url.PathEscape(workspace) + "/chats"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return nil, err
+	}
+	c.auth(req)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", errorFrom(resp)
+		return nil, errorFrom(resp)
+	}
+
+	var out listChatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Chats, nil
+}
+
+// GetChat loads one conversation with its full message history, oldest exchange
+// first. The slug identifies the conversation on its own, so no workspace is
+// needed.
+func (c *Client) GetChat(ctx context.Context, chatSlug string) (ChatWithMessages, error) {
+	u := c.BaseURL + "/api/chats/" + url.PathEscape(chatSlug)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ChatWithMessages{}, err
+	}
+	c.auth(req)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return ChatWithMessages{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ChatWithMessages{}, errorFrom(resp)
+	}
+
+	var out getChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ChatWithMessages{}, err
+	}
+	return out.Chat, nil
+}
+
+// AskBuffered runs one ask and returns the whole formatted answer, plus the
+// conversation it ran in.
+func (c *Client) AskBuffered(ctx context.Context, req AskRequest) (AskResult, error) {
+	req.Stream = false
+	resp, err := c.postAsk(ctx, req)
+	if err != nil {
+		return AskResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return AskResult{}, errorFrom(resp)
 	}
 
 	var out askResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
+		return AskResult{}, err
 	}
-	return out.Answer, nil
+	return AskResult{Answer: out.Answer, ChatSlug: out.ChatSlug}, nil
 }
 
 // AskStream runs one ask and delivers formatted output/status frames to h as
@@ -128,6 +185,11 @@ func (c *Client) AskStream(ctx context.Context, req AskRequest, h StreamHandlers
 		switch ev.Type {
 		case "stream_end":
 			return nil
+		case "conversation":
+			var c conversationFrame
+			if json.Unmarshal([]byte(ev.Data), &c) == nil && c.ChatSlug != "" && h.OnConversation != nil {
+				h.OnConversation(c.ChatSlug)
+			}
 		case "output":
 			var o outputFrame
 			if json.Unmarshal([]byte(ev.Data), &o) == nil && h.OnOutput != nil {
