@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
 	"golang.org/x/term"
 )
 
@@ -17,14 +18,20 @@ import (
 // output is piped, not a tty).
 const defaultMarkdownWidth = 100
 
-// Markdown renders markdown to ANSI-styled terminal text, auto-detecting the
-// terminal style. Safe for one-shot (immediate-mode) output where no full-screen
-// program owns the terminal. On any failure it falls back to raw markdown.
+// Markdown renders markdown to ANSI-styled terminal text, matching the terminal
+// style. Safe for one-shot (immediate-mode) output where no full-screen program
+// owns the terminal. On any failure it falls back to raw markdown.
+//
+// glamour renders in true color unconditionally, so the result goes through
+// lipgloss to be downsampled to what stdout actually supports.
 func Markdown(md string, width int) string {
 	if strings.TrimSpace(md) == "" {
 		return ""
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(clampWidth(width)))
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle(styleFor(hasDarkBackground())),
+		glamour.WithWordWrap(clampWidth(width)),
+	)
 	if err != nil {
 		return md
 	}
@@ -32,16 +39,15 @@ func Markdown(md string, width int) string {
 	if err != nil {
 		return md
 	}
-	return out
+	return lipgloss.Sprint(out)
 }
 
-// HasDarkBackground reports whether the terminal has a dark background, using
-// lipgloss's cached detection. bubbletea's package init() warms this cache with
-// a single query before any program acquires the terminal, so calling it here
-// does NOT issue a fresh terminal query — avoiding the classic bug where the
-// query's response leaks into the TUI's input.
-func HasDarkBackground() bool {
-	return lipgloss.HasDarkBackground()
+// hasDarkBackground reports whether the terminal has a dark background by
+// querying it. This is blocking I/O on the terminal, so it must not be called
+// while a bubbletea program owns it — a program listens for
+// tea.BackgroundColorMsg instead (see the REPL).
+func hasDarkBackground() bool {
+	return lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 }
 
 // MDRenderer is a reusable markdown→ANSI renderer with a FIXED style. Unlike
@@ -50,26 +56,41 @@ func HasDarkBackground() bool {
 // input). Rebuild via Resize when the terminal width changes.
 type MDRenderer struct {
 	style string
+	width int
 	tr    *glamour.TermRenderer
 }
 
 // NewMDRenderer builds a renderer for the given background and width.
 func NewMDRenderer(dark bool, width int) *MDRenderer {
-	style := "light"
-	if dark {
-		style = "dark"
-	}
-	m := &MDRenderer{style: style}
+	m := &MDRenderer{style: styleFor(dark)}
 	m.Resize(width)
 	return m
 }
 
 // Resize rebuilds the renderer for a new width (same fixed style, no queries).
 func (m *MDRenderer) Resize(width int) {
+	m.width = width
 	tr, err := glamour.NewTermRenderer(glamour.WithStandardStyle(m.style), glamour.WithWordWrap(clampWidth(width)))
 	if err == nil {
 		m.tr = tr
 	}
+}
+
+// SetDark switches to the light or dark palette, rebuilding the renderer at its
+// current width. A full-screen program that only learns the terminal background
+// after it starts (via tea.BackgroundColorMsg) uses this to correct its guess.
+func (m *MDRenderer) SetDark(dark bool) {
+	if style := styleFor(dark); style != m.style {
+		m.style = style
+		m.Resize(m.width)
+	}
+}
+
+func styleFor(dark bool) string {
+	if dark {
+		return styles.DarkStyle
+	}
+	return styles.LightStyle
 }
 
 // Render renders md, falling back to raw text on any failure.

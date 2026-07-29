@@ -7,8 +7,9 @@ import (
 	"testing"
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func newHistoryModel() *replModel {
