@@ -27,12 +27,6 @@ const inputHeight = 3
 // a hint/status line, a rule, the input box, another rule, and the context bar.
 const footerHeight = inputHeight + 4
 
-// spinnerInterval is how often the in-transcript status line's spinner frame
-// and elapsed timer advance while a turn is streaming.
-const spinnerInterval = 100 * time.Millisecond
-
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
 // inputPrompt marks the first line of the input box; wrapped continuation
 // lines get no prompt (see the SetPromptFunc call in runREPL).
 const inputPrompt = "❯ "
@@ -125,11 +119,11 @@ type (
 	conversationMsg string
 )
 
-// tickMsg advances the in-transcript spinner/elapsed-timer while a turn streams.
+// tickMsg advances the loading animation and elapsed timer while a turn streams.
 type tickMsg struct{}
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return tickMsg{} })
+	return tea.Tick(loaderInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 // One-shot command results (not part of the m.sub stream).
@@ -215,7 +209,7 @@ type replModel struct {
 	answer      strings.Builder
 	status      string
 	cancel      context.CancelFunc
-	spinnerIdx  int
+	loaderIdx   int
 	turnStarted time.Time
 
 	mode        replMode
@@ -269,8 +263,10 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.streaming {
 			return m, nil
 		}
-		m.spinnerIdx++
-		m.refresh()
+		// Both the animation and the elapsed timer live in the frame rather
+		// than the transcript, so advancing them needs no re-render of the
+		// transcript's markdown — returning is enough to redraw the frame.
+		m.loaderIdx++
 		return m, tickCmd()
 
 	case conversationMsg:
@@ -573,7 +569,7 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	m.streaming = true
 	m.answer.Reset()
 	m.status = "thinking…"
-	m.spinnerIdx = 0
+	m.loaderIdx = 0
 	m.turnStarted = time.Now()
 	m.input.Blur()
 	m.refresh()
@@ -1002,6 +998,8 @@ func (m *replModel) refresh() {
 		}
 		b.WriteString(m.renderEntry(e))
 	}
+	// The answer streams into the transcript as it arrives; the animation and
+	// status that accompany it are drawn in the frame instead (see content).
 	if m.streaming {
 		if live := strings.TrimSpace(m.answer.String()); live != "" {
 			if b.Len() > 0 {
@@ -1009,10 +1007,6 @@ func (m *replModel) refresh() {
 			}
 			b.WriteString(strings.TrimRight(m.md.Render(m.answer.String()), "\n"))
 		}
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(m.spinnerLine())
 	}
 	m.lines = strings.Split(b.String(), "\n")
 	m.paint()
@@ -1096,18 +1090,6 @@ func (m *replModel) clearSelection() {
 	m.sel = selection{}
 	m.copied = false
 	m.paint()
-}
-
-// spinnerLine renders the animated "<frame> <status> (<elapsed>s)" line shown
-// in the transcript, right under the latest message, while a turn streams.
-func (m *replModel) spinnerLine() string {
-	frame := spinnerFrames[m.spinnerIdx%len(spinnerFrames)]
-	status := m.status
-	if status == "" {
-		status = "working…"
-	}
-	elapsed := int(time.Since(m.turnStarted).Seconds())
-	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    esc cancels", frame, status, elapsed))
 }
 
 func (m *replModel) renderEntry(e transcriptEntry) string {
@@ -1247,15 +1229,30 @@ func (m *replModel) content() string {
 		return m.vp.View() + "\n" + faintStyle.Render("selecting conversation…") + "\n\n" + m.statusBar()
 	}
 
-	// The animated status/spinner lives in the transcript itself (see
-	// spinnerLine), so this hint stays static regardless of streaming state.
 	hint := faintStyle.Render("enter send · ↑↓ history · ctrl+r resume · pgup/pgdn/mouse scroll · drag to copy · esc cancel · ctrl+c clear · ctrl+d quit")
 	if m.copied {
 		hint = faintStyle.Render("copied the selection to the clipboard · esc clears it")
 	}
+
+	// While a turn is in flight the loading animation stands in for the
+	// transcript until the first token arrives; after that, and in a window too
+	// small for the animation, the hint line carries the status instead. Both
+	// are drawn here rather than in the transcript so that a frame tick costs
+	// nothing but a redraw, and so the animation stays centred in the window at
+	// whatever size it is.
+	body, animating := m.vp.View(), false
+	if m.loading() {
+		if loader, ok := m.loaderView(m.width, m.vp.Height()); ok {
+			body, animating = loader, true
+		}
+	}
+	if m.streaming && !animating {
+		hint = faintStyle.Render(m.statusText() + "    esc cancels")
+	}
+
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
-	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
+	return body + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
 }
 
 const replHelp = `commands:
