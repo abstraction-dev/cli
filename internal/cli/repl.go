@@ -77,12 +77,13 @@ func runREPL(env *appEnv, initialPR string) int {
 	// leak the response into the input, so the program asks for the background
 	// itself and restyles when the answer arrives (see tea.BackgroundColorMsg).
 	m := &replModel{
-		env:        env,
-		sub:        make(chan tea.Msg, 256),
-		md:         render.NewMDRenderer(true, 0),
-		input:      ti,
-		activePR:   initialPR,
-		blockStart: -1,
+		env:          env,
+		sub:          make(chan tea.Msg, 256),
+		md:           render.NewMDRenderer(true, 0),
+		input:        ti,
+		activePR:     initialPR,
+		blockStart:   -1,
+		despawnStart: -1,
 	}
 	m.applyBackground(true)
 	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
@@ -198,6 +199,13 @@ type replModel struct {
 	// no turn is reserving one. It lets a frame of the animation be redrawn
 	// without re-rendering the transcript around it (see refreshLoader).
 	blockStart int
+	// despawnStart is the tick the animation began dissolving on, or -1 when it
+	// is not dissolving. It doubles as the dissolve's noise seed, so a given
+	// glyph breaks up at the same moment however often the block is redrawn.
+	despawnStart int
+	// answerRows is the streaming answer as refresh last rendered it, kept so a
+	// dissolve tick can recompose the block without re-rendering any markdown.
+	answerRows []string
 	sel        selection
 	copied     bool // the last selection reached the clipboard; shown in the hint
 
@@ -283,7 +291,13 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, waitForMsg(m.sub)
 	case deltaMsg:
+		// The token that ends the wait is what sets the animation dissolving,
+		// so it clears away over the answer rather than blinking out.
+		wasLoading := m.loading()
 		m.answer.WriteString(string(msg))
+		if wasLoading && !m.loading() && m.loaderFits() {
+			m.despawnStart = m.loaderIdx
+		}
 		m.refresh()
 		return m, waitForMsg(m.sub)
 	case doneMsg:
@@ -576,6 +590,7 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	m.answer.Reset()
 	m.status = "thinking…"
 	m.loaderIdx = 0
+	m.despawnStart = -1
 	m.turnStarted = time.Now()
 	m.input.Blur()
 	m.refresh()
@@ -1011,22 +1026,17 @@ func (m *replModel) refresh() {
 	// rows. Because the block never changes height, the conversation above it
 	// does not move when the answer arrives — the answer simply starts where the
 	// animation was.
-	m.blockStart = -1
+	m.blockStart, m.answerRows = -1, nil
 	if m.streaming {
-		var block []string
 		if live := strings.TrimSpace(m.answer.String()); live != "" {
-			block = strings.Split(strings.TrimRight(m.md.Render(m.answer.String()), "\n"), "\n")
+			m.answerRows = strings.Split(strings.TrimRight(m.md.Render(m.answer.String()), "\n"), "\n")
 		}
 		if m.loaderFits() {
 			m.blockStart = len(m.lines)
-			if m.loading() {
-				block = m.loaderRows()
-			}
-			for len(block) < loaderBand {
-				block = append(block, "")
-			}
+			m.lines = append(m.lines, m.blockRows(m.answerRows)...)
+		} else {
+			m.lines = append(m.lines, m.answerRows...)
 		}
-		m.lines = append(m.lines, block...)
 	}
 
 	m.paint()
@@ -1035,14 +1045,15 @@ func (m *replModel) refresh() {
 	}
 }
 
-// refreshLoader redraws just the animation's rows in place. The transcript's
-// markdown is expensive to render and cannot have changed between two frames of
-// the animation, so a tick rewrites the block and leaves the rest alone.
+// refreshLoader redraws just the block's rows in place, for both the animation
+// and its dissolve. The transcript's markdown is expensive to render and cannot
+// have changed between two frames, so a tick rewrites the block from the answer
+// rows refresh already rendered and leaves everything else alone.
 func (m *replModel) refreshLoader() {
-	if !m.ready || m.blockStart < 0 || !m.loading() {
+	if !m.ready || m.blockStart < 0 || !(m.loading() || m.despawning()) {
 		return
 	}
-	rows := m.loaderRows()
+	rows := m.blockRows(m.answerRows)
 	if m.blockStart+len(rows) > len(m.lines) {
 		return
 	}

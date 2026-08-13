@@ -142,7 +142,7 @@ func TestConversationDoesNotMove(t *testing.T) {
 	m.streaming = true
 	m.status = "searching the codebase…"
 	m.turnStarted = time.Now()
-	m.refresh()
+	settleSpawn(m)
 
 	loadingView := m.vp.View()
 	loadingRow := rowOf(t, loadingView, question)
@@ -267,6 +267,214 @@ func TestRefreshLoaderRewritesInPlace(t *testing.T) {
 	}
 }
 
+// TestDespawn drives the real message path and checks the animation dissolves
+// top-to-bottom rather than vanishing, uncovering the answer as it goes, and
+// that it is fully gone by the time the dissolve is over.
+func TestDespawn(t *testing.T) {
+	m := newTestModel(t, 80, 40)
+	m.entries = []transcriptEntry{{entryUser, "how does auth work?"}}
+	m.streaming = true
+	m.turnStarted = time.Now()
+	settleSpawn(m)
+
+	full := artPerRow(m.lines[m.blockStart:])
+	if sum(full) == 0 {
+		t.Fatalf("no artwork to dissolve:\n%s", strings.Join(m.lines[m.blockStart:], "\n"))
+	}
+
+	// The first token starts the dissolve rather than clearing the block.
+	var mm tea.Model = m
+	mm, _ = mm.Update(deltaMsg("Auth is handled by middleware."))
+	if m.despawnStart < 0 {
+		t.Fatal("first token did not start the dissolve")
+	}
+	if !m.despawning() {
+		t.Fatal("not dissolving straight after the first token")
+	}
+
+	// It eats downwards: the top clears while lower rows still hold artwork,
+	// and no row ever gains glyphs back.
+	prev := artPerRow(m.lines[m.blockStart:])
+	sawPartialRow, sawUnevenFront := false, false
+	for step := 0; step < loaderBand*2 && m.despawning(); step++ {
+		mm, _ = mm.Update(tickMsg{})
+		now := artPerRow(m.lines[m.blockStart:])
+
+		for r := range now {
+			if now[r] > prev[r] {
+				t.Fatalf("step %d: row %d gained glyphs back (%d -> %d)", step, r, prev[r], now[r])
+			}
+		}
+		// A row part way through breaking up: some glyphs gone, some left.
+		for r := range now {
+			if now[r] > 0 && now[r] < full[r] {
+				sawPartialRow = true
+			}
+		}
+		// Top gone while the bottom is still intact.
+		if topArt(now) == 0 && bottomArt(now, full) > 0 {
+			sawUnevenFront = true
+		}
+		prev = now
+	}
+
+	if !sawPartialRow {
+		t.Fatal("no row ever broke up: the dissolve cut cleanly instead of adding noise")
+	}
+	if !sawUnevenFront {
+		t.Fatal("the dissolve did not run top-to-bottom")
+	}
+	if m.despawning() {
+		t.Fatal("the dissolve never finished")
+	}
+	if got := artPerRow(m.lines[m.blockStart:]); topArt(got)+bottomArt(got, full) != 0 {
+		t.Fatalf("artwork survived the dissolve:\n%s", strings.Join(m.lines[m.blockStart:], "\n"))
+	}
+	// And the answer it uncovered is what is left in the block.
+	if !strings.Contains(ansi.Strip(strings.Join(m.lines[m.blockStart:], "\n")), "Auth is handled by middleware.") {
+		t.Fatalf("answer missing after the dissolve:\n%s", strings.Join(m.lines[m.blockStart:], "\n"))
+	}
+}
+
+// TestSpawn is the dissolve's mirror: the animation assembles from the bottom
+// up out of noise rather than appearing whole, and ends up complete.
+func TestSpawn(t *testing.T) {
+	m := newTestModel(t, 80, 40)
+	m.entries = []transcriptEntry{{entryUser, "how does auth work?"}}
+	m.streaming = true
+	m.turnStarted = time.Now()
+	m.refresh()
+
+	if !m.spawning() {
+		t.Fatal("not building at the start of a turn")
+	}
+
+	// The animation keeps rotating as it assembles, so each step is compared
+	// against the same frame fully formed rather than against a fixed one.
+	if now, whole := artPerRow(m.lines[m.blockStart:]), artPerRow(m.loaderRows()); sum(now) >= sum(whole) {
+		t.Fatalf("animation was already whole on its first frame: %d of %d glyphs", sum(now), sum(whole))
+	}
+
+	sawPartialRow, sawUnevenFront := false, false
+	for step := 0; step < loaderBand*2 && m.spawning(); step++ {
+		m.loaderIdx++
+		m.refreshLoader()
+		now, whole := artPerRow(m.lines[m.blockStart:]), artPerRow(m.loaderRows())
+
+		for r := range now {
+			if now[r] > 0 && now[r] < whole[r] {
+				sawPartialRow = true
+			}
+		}
+		// Bottom filled in while the top is still empty — the opposite of the
+		// dissolve, which clears the top first.
+		if bottomArt(now, whole) > 0 && topArt(now) == 0 {
+			sawUnevenFront = true
+		}
+	}
+
+	if !sawPartialRow {
+		t.Fatal("no row ever formed gradually: the build snapped in instead of gathering out of noise")
+	}
+	if !sawUnevenFront {
+		t.Fatal("the build did not run bottom-to-top")
+	}
+	if m.spawning() {
+		t.Fatal("the build never finished")
+	}
+	got, whole := artPerRow(m.lines[m.blockStart:]), artPerRow(m.loaderRows())
+	if sum(got) != sum(whole) {
+		t.Fatalf("animation incomplete after the build: %d of %d glyphs", sum(got), sum(whole))
+	}
+}
+
+// TestEmergeIsMonotonic checks a glyph, once formed, stays formed as the build
+// deepens — the mirror of erode's guarantee, and what stops the noise sparkling.
+func TestEmergeIsMonotonic(t *testing.T) {
+	rows := strings.Split(loaderFrames[0], "\n")
+	row := rows[len(rows)/2]
+	if countArt(row) == 0 {
+		t.Skip("picked a blank row")
+	}
+
+	prev := countArt(emerge(row, 0, 42))
+	for depth := 1; depth < buildNoise; depth++ {
+		got := countArt(emerge(row, depth, 42))
+		if got < prev {
+			t.Fatalf("depth %d took glyphs away: %d -> %d", depth, prev, got)
+		}
+		prev = got
+	}
+	if prev != countArt(row) {
+		t.Fatalf("the deepest build left the row incomplete: %d of %d", prev, countArt(row))
+	}
+}
+
+// settleSpawn advances the model past the entrance animation, for tests that
+// care about the animation running rather than assembling.
+func settleSpawn(m *replModel) {
+	for m.spawning() {
+		m.loaderIdx++
+	}
+	m.refresh()
+}
+
+// TestErodeIsMonotonic checks a glyph, once broken up, stays broken up as the
+// dissolve deepens — the property that stops the artwork flickering.
+func TestErodeIsMonotonic(t *testing.T) {
+	row := loaderFrames[0]
+	row = strings.Split(row, "\n")[len(strings.Split(row, "\n"))/2]
+
+	prev := countArt(row)
+	if prev == 0 {
+		t.Skip("picked a blank row")
+	}
+	for depth := 0; depth < buildNoise; depth++ {
+		got := countArt(erode(row, depth, 42))
+		if got > prev {
+			t.Fatalf("depth %d put glyphs back: %d -> %d", depth, prev, got)
+		}
+		prev = got
+	}
+	if prev == countArt(row) {
+		t.Fatal("the deepest erosion removed nothing")
+	}
+}
+
+func artPerRow(rows []string) []int {
+	out := make([]int, len(rows))
+	for i, r := range rows {
+		out[i] = countArt(r)
+	}
+	return out
+}
+
+func countArt(s string) int {
+	n := 0
+	for _, r := range ansi.Strip(s) {
+		if strings.ContainsRune("█▓▒░", r) {
+			n++
+		}
+	}
+	return n
+}
+
+// topArt and bottomArt count surviving glyphs in the half of the block each
+// side of the artwork's middle, which is enough to tell a top-down dissolve
+// from an all-at-once one.
+func topArt(counts []int) int { return sum(counts[:loaderHeight/2]) }
+func bottomArt(counts, full []int) int {
+	return sum(counts[loaderHeight/2 : min(len(counts), loaderHeight)])
+}
+
+func sum(xs []int) int {
+	t := 0
+	for _, x := range xs {
+		t += x
+	}
+	return t
+}
+
 // rowOf reports which line of a rendered view contains needle.
 func rowOf(t *testing.T, view, needle string) int {
 	t.Helper()
@@ -365,10 +573,12 @@ func newTestModel(t *testing.T, w, h int) *replModel {
 	ti.ShowLineNumbers = false
 	ti.SetHeight(inputHeight)
 	m := &replModel{
-		env:   &appEnv{workspace: "ws-abcdef123"},
-		sub:   make(chan tea.Msg, 8),
-		md:    render.NewMDRenderer(true, 0),
-		input: ti,
+		env:          &appEnv{workspace: "ws-abcdef123"},
+		sub:          make(chan tea.Msg, 8),
+		md:           render.NewMDRenderer(true, 0),
+		input:        ti,
+		blockStart:   -1,
+		despawnStart: -1,
 	}
 	m.applyBackground(true)
 	m.resize(w, h)
