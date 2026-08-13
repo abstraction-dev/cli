@@ -33,6 +33,64 @@ func TestLoaderFrames(t *testing.T) {
 	}
 }
 
+// loopSeamWindow is how many frames either side of the seam count as "next to
+// it" for the purposes of TestLoaderLoopIsSeamless.
+const loopSeamWindow = 5
+
+// TestLoaderLoopIsSeamless checks the animation closes on itself. The pose the
+// last frame is nearest to has to be one of its own neighbours — either just
+// before it or just after the wrap — because that is what being adjacent in a
+// rotation means. The source Lottie's final frame instead repeats a pose from
+// ten frames earlier, which made the animation step visibly backwards once per
+// loop, so it is left out of the asset (see assets.ASCIISpinner).
+//
+// Comparing the seam's step against the interior steps would not catch this:
+// the rotation is eased, so its interior steps are far coarser than anything
+// happening at the seam.
+func TestLoaderLoopIsSeamless(t *testing.T) {
+	if len(loaderFrames) < loopSeamWindow*2+2 {
+		t.Skip("too few frames to have a meaningful seam")
+	}
+	last := len(loaderFrames) - 1
+
+	nearest, best := -1, 0
+	for i := range loaderFrames {
+		if i == last {
+			continue
+		}
+		if d := frameDistance(loaderFrames[last], loaderFrames[i]); nearest < 0 || d < best {
+			nearest, best = i, d
+		}
+	}
+
+	adjacent := nearest >= last-loopSeamWindow || nearest <= loopSeamWindow
+	if !adjacent {
+		t.Fatalf("the loop steps backwards at the seam: the last frame is nearest to "+
+			"frame %d of %d (%d cells apart), which is neither just before it nor just "+
+			"after the wrap. Was the source Lottie's final frame left in?",
+			nearest, len(loaderFrames), best)
+	}
+}
+
+// frameDistance counts the cells two frames differ in.
+func frameDistance(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	n := 0
+	for i := 0; i < min(len(ar), len(br)); i++ {
+		if ar[i] != br[i] {
+			n++
+		}
+	}
+	return n + abs(len(ar)-len(br))
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // TestLoaderViewBand checks the band is exactly the height it claims and that
 // its contents are horizontally centred at any width.
 func TestLoaderViewBand(t *testing.T) {
