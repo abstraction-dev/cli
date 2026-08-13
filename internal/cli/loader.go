@@ -26,6 +26,31 @@ var loaderFrames = parseLoaderFrames(assets.ASCIISpinner)
 // first one measures them all.
 var loaderWidth, loaderHeight = frameSize(loaderFrames)
 
+// loaderBand is how many transcript rows the animation takes over: the frame
+// itself, a blank row, and the status line.
+var loaderBand = loaderHeight + 2
+
+// loaderMinTranscript is how many rows of transcript must survive underneath
+// the animation for reserving the band to be worth it. Below that the window
+// is too short to show both, and the animation gives way to the one-character
+// spinner on the hint line.
+const loaderMinTranscript = 3
+
+// fallbackFrames is the one-character spinner shown wherever the band will not
+// fit, so that a small window still gets a moving indicator rather than a
+// static line. It is the spinner the REPL used before the ASCII animation.
+var fallbackFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// writingStatus is what the status line reads once the answer is coming
+// through, in place of the last thing the backend reported doing.
+const writingStatus = "Writing response…"
+
+// fallbackEvery is how many ticks each one-character frame is held for. The
+// tick runs at 30fps to drive the ASCII animation, which would spin this one
+// three times faster than it used to go, so it is slowed back to its original
+// ~100ms a frame.
+const fallbackEvery = 3
+
 // parseLoaderFrames splits the asset into frames on its "---" separator lines.
 func parseLoaderFrames(raw string) []string {
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
@@ -54,26 +79,44 @@ func (m *replModel) loading() bool {
 	return m.streaming && strings.TrimSpace(m.answer.String()) == ""
 }
 
-// loaderView renders the current animation frame with the status beneath it,
-// centred on both axes in a box of the given size. It reports false when the
-// box is too small to hold the animation, leaving the caller on the plain-text
-// status instead of a clipped frame.
-func (m *replModel) loaderView(width, height int) (string, bool) {
-	if len(loaderFrames) == 0 || width < loaderWidth || height < loaderHeight+2 {
-		return "", false
-	}
+// loaderFits reports whether the window can hold the reserved block and still
+// leave a usable amount of conversation above it. It gates the reservation as a
+// whole, so a window too small for the animation reserves nothing and the
+// answer streams the way it always did.
+func (m *replModel) loaderFits() bool {
+	return len(loaderFrames) > 0 &&
+		m.width >= loaderWidth &&
+		m.vp.Height() >= loaderBand+loaderMinTranscript
+}
+
+// loaderRows renders the current animation frame with the status beneath it,
+// centred horizontally, as exactly loaderBand rows. That fixed height is what
+// keeps the conversation still: the answer later streams into the same rows.
+func (m *replModel) loaderRows() []string {
 	frame := loaderFrames[m.loaderIdx%len(loaderFrames)]
 	block := loaderStyle.Render(frame) +
 		"\n\n" +
 		lipgloss.PlaceHorizontal(loaderWidth, lipgloss.Center, faintStyle.Render(m.statusText()))
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, block), true
+	return strings.Split(lipgloss.Place(m.width, loaderBand, lipgloss.Center, lipgloss.Center, block), "\n")
+}
+
+// fallbackLine renders the one-character spinner and the status, the form the
+// REPL's status line took before the ASCII animation.
+func (m *replModel) fallbackLine() string {
+	frame := fallbackFrames[(m.loaderIdx/fallbackEvery)%len(fallbackFrames)]
+	return frame + " " + m.statusText()
 }
 
 // statusText is the "<what it's doing> (<elapsed>s)" label shown under the
-// animation, and on the hint line once the answer starts streaming.
+// animation, and beside the one-character spinner on the hint line.
 func (m *replModel) statusText() string {
 	status := m.status
-	if status == "" {
+	switch {
+	case m.streaming && !m.loading():
+		// Tokens are arriving, which makes whatever the backend last reported
+		// stale — whatever it was doing, it is writing the answer now.
+		status = writingStatus
+	case status == "":
 		status = "working…"
 	}
 	return fmt.Sprintf("%s (%ds)", status, int(time.Since(m.turnStarted).Seconds()))

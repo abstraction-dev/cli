@@ -77,11 +77,12 @@ func runREPL(env *appEnv, initialPR string) int {
 	// leak the response into the input, so the program asks for the background
 	// itself and restyles when the answer arrives (see tea.BackgroundColorMsg).
 	m := &replModel{
-		env:      env,
-		sub:      make(chan tea.Msg, 256),
-		md:       render.NewMDRenderer(true, 0),
-		input:    ti,
-		activePR: initialPR,
+		env:        env,
+		sub:        make(chan tea.Msg, 256),
+		md:         render.NewMDRenderer(true, 0),
+		input:      ti,
+		activePR:   initialPR,
+		blockStart: -1,
 	}
 	m.applyBackground(true)
 	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
@@ -192,9 +193,13 @@ type replModel struct {
 	entries []transcriptEntry
 	// lines is the transcript as rendered, kept line by line so a mouse
 	// selection can be painted over it and copied out of it (see selection.go).
-	lines  []string
-	sel    selection
-	copied bool // the last selection reached the clipboard; shown in the hint
+	lines []string
+	// blockStart is where in lines the turn's reserved block begins, or -1 when
+	// no turn is reserving one. It lets a frame of the animation be redrawn
+	// without re-rendering the transcript around it (see refreshLoader).
+	blockStart int
+	sel        selection
+	copied     bool // the last selection reached the clipboard; shown in the hint
 
 	wsName string // resolved friendly name of the current workspace
 
@@ -263,10 +268,11 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.streaming {
 			return m, nil
 		}
-		// Both the animation and the elapsed timer live in the frame rather
-		// than the transcript, so advancing them needs no re-render of the
-		// transcript's markdown — returning is enough to redraw the frame.
+		// The elapsed timer lives in the frame, so it redraws on its own; the
+		// animation is in the transcript and has its rows rewritten in place,
+		// which costs nothing like a full re-render.
 		m.loaderIdx++
+		m.refreshLoader()
 		return m, tickCmd()
 
 	case conversationMsg:
@@ -998,21 +1004,50 @@ func (m *replModel) refresh() {
 		}
 		b.WriteString(m.renderEntry(e))
 	}
-	// The answer streams into the transcript as it arrives; the animation and
-	// status that accompany it are drawn in the frame instead (see content).
-	if m.streaming {
-		if live := strings.TrimSpace(m.answer.String()); live != "" {
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(strings.TrimRight(m.md.Render(m.answer.String()), "\n"))
-		}
-	}
 	m.lines = strings.Split(b.String(), "\n")
+
+	// A turn reserves a fixed block of rows below the question for the whole of
+	// its length: first the animation, then the answer streaming into the same
+	// rows. Because the block never changes height, the conversation above it
+	// does not move when the answer arrives — the answer simply starts where the
+	// animation was.
+	m.blockStart = -1
+	if m.streaming {
+		var block []string
+		if live := strings.TrimSpace(m.answer.String()); live != "" {
+			block = strings.Split(strings.TrimRight(m.md.Render(m.answer.String()), "\n"), "\n")
+		}
+		if m.loaderFits() {
+			m.blockStart = len(m.lines)
+			if m.loading() {
+				block = m.loaderRows()
+			}
+			for len(block) < loaderBand {
+				block = append(block, "")
+			}
+		}
+		m.lines = append(m.lines, block...)
+	}
+
 	m.paint()
 	if stick {
 		m.vp.GotoBottom()
 	}
+}
+
+// refreshLoader redraws just the animation's rows in place. The transcript's
+// markdown is expensive to render and cannot have changed between two frames of
+// the animation, so a tick rewrites the block and leaves the rest alone.
+func (m *replModel) refreshLoader() {
+	if !m.ready || m.blockStart < 0 || !m.loading() {
+		return
+	}
+	rows := m.loaderRows()
+	if m.blockStart+len(rows) > len(m.lines) {
+		return
+	}
+	copy(m.lines[m.blockStart:], rows)
+	m.paint()
 }
 
 // paint pushes the transcript into the viewport with any selection highlighted.
@@ -1234,25 +1269,17 @@ func (m *replModel) content() string {
 		hint = faintStyle.Render("copied the selection to the clipboard · esc clears it")
 	}
 
-	// While a turn is in flight the loading animation stands in for the
-	// transcript until the first token arrives; after that, and in a window too
-	// small for the animation, the hint line carries the status instead. Both
-	// are drawn here rather than in the transcript so that a frame tick costs
-	// nothing but a redraw, and so the animation stays centred in the window at
-	// whatever size it is.
-	body, animating := m.vp.View(), false
-	if m.loading() {
-		if loader, ok := m.loaderView(m.width, m.vp.Height()); ok {
-			body, animating = loader, true
-		}
-	}
-	if m.streaming && !animating {
-		hint = faintStyle.Render(m.statusText() + "    esc cancels")
+	// The animation lives in the transcript's reserved block (see refresh), so
+	// nothing is overlaid here. Wherever it is not on screen — once tokens
+	// arrive, or in a window too small to hold it — the one-character spinner
+	// takes over the hint line, so a turn in flight always has something moving.
+	if m.streaming && !(m.loading() && m.loaderFits()) {
+		hint = faintStyle.Render(m.fallbackLine() + "    esc cancels")
 	}
 
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
-	return body + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
+	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
 }
 
 const replHelp = `commands:
