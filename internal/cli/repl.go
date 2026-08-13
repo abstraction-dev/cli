@@ -27,12 +27,6 @@ const inputHeight = 3
 // a hint/status line, a rule, the input box, another rule, and the context bar.
 const footerHeight = inputHeight + 4
 
-// spinnerInterval is how often the in-transcript status line's spinner frame
-// and elapsed timer advance while a turn is streaming.
-const spinnerInterval = 100 * time.Millisecond
-
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
 // inputPrompt marks the first line of the input box; wrapped continuation
 // lines get no prompt (see the SetPromptFunc call in runREPL).
 const inputPrompt = "❯ "
@@ -83,11 +77,13 @@ func runREPL(env *appEnv, initialPR string) int {
 	// leak the response into the input, so the program asks for the background
 	// itself and restyles when the answer arrives (see tea.BackgroundColorMsg).
 	m := &replModel{
-		env:      env,
-		sub:      make(chan tea.Msg, 256),
-		md:       render.NewMDRenderer(true, 0),
-		input:    ti,
-		activePR: initialPR,
+		env:          env,
+		sub:          make(chan tea.Msg, 256),
+		md:           render.NewMDRenderer(true, 0),
+		input:        ti,
+		activePR:     initialPR,
+		blockStart:   -1,
+		despawnStart: -1,
 	}
 	m.applyBackground(true)
 	m.entries = []transcriptEntry{{entrySystem, "Chatting with Astrid. Type /help for commands, /exit to quit."}}
@@ -125,11 +121,11 @@ type (
 	conversationMsg string
 )
 
-// tickMsg advances the in-transcript spinner/elapsed-timer while a turn streams.
+// tickMsg advances the loading animation and elapsed timer while a turn streams.
 type tickMsg struct{}
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return tickMsg{} })
+	return tea.Tick(loaderInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 // One-shot command results (not part of the m.sub stream).
@@ -198,9 +194,20 @@ type replModel struct {
 	entries []transcriptEntry
 	// lines is the transcript as rendered, kept line by line so a mouse
 	// selection can be painted over it and copied out of it (see selection.go).
-	lines  []string
-	sel    selection
-	copied bool // the last selection reached the clipboard; shown in the hint
+	lines []string
+	// blockStart is where in lines the turn's reserved block begins, or -1 when
+	// no turn is reserving one. It lets a frame of the animation be redrawn
+	// without re-rendering the transcript around it (see refreshLoader).
+	blockStart int
+	// despawnStart is the tick the animation began dissolving on, or -1 when it
+	// is not dissolving. It doubles as the dissolve's noise seed, so a given
+	// glyph breaks up at the same moment however often the block is redrawn.
+	despawnStart int
+	// answerRows is the streaming answer as refresh last rendered it, kept so a
+	// dissolve tick can recompose the block without re-rendering any markdown.
+	answerRows []string
+	sel        selection
+	copied     bool // the last selection reached the clipboard; shown in the hint
 
 	wsName string // resolved friendly name of the current workspace
 
@@ -215,7 +222,7 @@ type replModel struct {
 	answer      strings.Builder
 	status      string
 	cancel      context.CancelFunc
-	spinnerIdx  int
+	loaderIdx   int
 	turnStarted time.Time
 
 	mode        replMode
@@ -269,8 +276,11 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.streaming {
 			return m, nil
 		}
-		m.spinnerIdx++
-		m.refresh()
+		// The elapsed timer lives in the frame, so it redraws on its own; the
+		// animation is in the transcript and has its rows rewritten in place,
+		// which costs nothing like a full re-render.
+		m.loaderIdx++
+		m.refreshLoader()
 		return m, tickCmd()
 
 	case conversationMsg:
@@ -281,7 +291,13 @@ func (m *replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, waitForMsg(m.sub)
 	case deltaMsg:
+		// The token that ends the wait is what sets the animation dissolving,
+		// so it clears away over the answer rather than blinking out.
+		wasLoading := m.loading()
 		m.answer.WriteString(string(msg))
+		if wasLoading && !m.loading() && m.loaderFits() {
+			m.despawnStart = m.loaderIdx
+		}
 		m.refresh()
 		return m, waitForMsg(m.sub)
 	case doneMsg:
@@ -573,7 +589,8 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	m.streaming = true
 	m.answer.Reset()
 	m.status = "thinking…"
-	m.spinnerIdx = 0
+	m.loaderIdx = 0
+	m.despawnStart = -1
 	m.turnStarted = time.Now()
 	m.input.Blur()
 	m.refresh()
@@ -1002,23 +1019,46 @@ func (m *replModel) refresh() {
 		}
 		b.WriteString(m.renderEntry(e))
 	}
+	m.lines = strings.Split(b.String(), "\n")
+
+	// A turn reserves a fixed block of rows below the question for the whole of
+	// its length: first the animation, then the answer streaming into the same
+	// rows. Because the block never changes height, the conversation above it
+	// does not move when the answer arrives — the answer simply starts where the
+	// animation was.
+	m.blockStart, m.answerRows = -1, nil
 	if m.streaming {
 		if live := strings.TrimSpace(m.answer.String()); live != "" {
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(strings.TrimRight(m.md.Render(m.answer.String()), "\n"))
+			m.answerRows = strings.Split(strings.TrimRight(m.md.Render(m.answer.String()), "\n"), "\n")
 		}
-		if b.Len() > 0 {
-			b.WriteString("\n")
+		if m.loaderFits() {
+			m.blockStart = len(m.lines)
+			m.lines = append(m.lines, m.blockRows(m.answerRows)...)
+		} else {
+			m.lines = append(m.lines, m.answerRows...)
 		}
-		b.WriteString(m.spinnerLine())
 	}
-	m.lines = strings.Split(b.String(), "\n")
+
 	m.paint()
 	if stick {
 		m.vp.GotoBottom()
 	}
+}
+
+// refreshLoader redraws just the block's rows in place, for both the animation
+// and its dissolve. The transcript's markdown is expensive to render and cannot
+// have changed between two frames, so a tick rewrites the block from the answer
+// rows refresh already rendered and leaves everything else alone.
+func (m *replModel) refreshLoader() {
+	if !m.ready || m.blockStart < 0 || !(m.loading() || m.despawning()) {
+		return
+	}
+	rows := m.blockRows(m.answerRows)
+	if m.blockStart+len(rows) > len(m.lines) {
+		return
+	}
+	copy(m.lines[m.blockStart:], rows)
+	m.paint()
 }
 
 // paint pushes the transcript into the viewport with any selection highlighted.
@@ -1096,18 +1136,6 @@ func (m *replModel) clearSelection() {
 	m.sel = selection{}
 	m.copied = false
 	m.paint()
-}
-
-// spinnerLine renders the animated "<frame> <status> (<elapsed>s)" line shown
-// in the transcript, right under the latest message, while a turn streams.
-func (m *replModel) spinnerLine() string {
-	frame := spinnerFrames[m.spinnerIdx%len(spinnerFrames)]
-	status := m.status
-	if status == "" {
-		status = "working…"
-	}
-	elapsed := int(time.Since(m.turnStarted).Seconds())
-	return faintStyle.Render(fmt.Sprintf("%s %s (%ds)    esc cancels", frame, status, elapsed))
 }
 
 func (m *replModel) renderEntry(e transcriptEntry) string {
@@ -1247,12 +1275,19 @@ func (m *replModel) content() string {
 		return m.vp.View() + "\n" + faintStyle.Render("selecting conversation…") + "\n\n" + m.statusBar()
 	}
 
-	// The animated status/spinner lives in the transcript itself (see
-	// spinnerLine), so this hint stays static regardless of streaming state.
 	hint := faintStyle.Render("enter send · ↑↓ history · ctrl+r resume · pgup/pgdn/mouse scroll · drag to copy · esc cancel · ctrl+c clear · ctrl+d quit")
 	if m.copied {
 		hint = faintStyle.Render("copied the selection to the clipboard · esc clears it")
 	}
+
+	// The animation lives in the transcript's reserved block (see refresh), so
+	// nothing is overlaid here. Wherever it is not on screen — once tokens
+	// arrive, or in a window too small to hold it — the one-character spinner
+	// takes over the hint line, so a turn in flight always has something moving.
+	if m.streaming && !(m.loading() && m.loaderFits()) {
+		hint = faintStyle.Render(m.fallbackLine() + "    esc cancels")
+	}
+
 	// Rules frame the input box, and the status bar sits at the very bottom.
 	rule := m.rule()
 	return m.vp.View() + "\n" + hint + "\n" + rule + "\n" + m.input.View() + "\n" + rule + "\n" + m.statusBar()
