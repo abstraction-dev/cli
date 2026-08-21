@@ -10,10 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
-	"github.com/abstraction-dev/cli/internal/browser"
 	"github.com/abstraction-dev/cli/internal/config"
 	"github.com/abstraction-dev/cli/internal/render"
+	"github.com/abstraction-dev/cli/internal/transport"
 
 	"golang.org/x/term"
 )
@@ -38,7 +37,7 @@ type runOptions struct {
 // appEnv is a ready-to-use, authenticated CLI environment.
 type appEnv struct {
 	cfg       *config.Config
-	client    *apiclient.Client
+	client    *transport.Client
 	render    *render.Renderer
 	workspace string
 }
@@ -65,7 +64,7 @@ func ensureConfigured(ctx context.Context, opts runOptions, interactive bool) (*
 
 	apiKey := cfg.APIKeyResolved()
 	if apiKey == "" {
-		key, err := bootstrapAPIKey(ctx, r, baseURL)
+		key, err := bootstrapAPIKey(ctx, cfg, r, baseURL)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +75,7 @@ func ensureConfigured(ctx context.Context, opts runOptions, interactive bool) (*
 		apiKey = key
 	}
 
-	client := apiclient.New(baseURL, apiKey)
+	client := transport.New(baseURL, apiKey)
 
 	workspace := cfg.WorkspaceResolved()
 	if opts.workspace != "" {
@@ -102,11 +101,11 @@ func ensureConfigured(ctx context.Context, opts runOptions, interactive bool) (*
 
 // bootstrapAPIKey walks the first-run flow: open the settings page, prompt for
 // a pasted key, and validate it against the API before returning.
-func bootstrapAPIKey(ctx context.Context, r *render.Renderer, baseURL string) (string, error) {
-	settingsURL := strings.TrimRight(baseURL, "/") + "/settings"
+func bootstrapAPIKey(ctx context.Context, cfg *config.Config, r *render.Renderer, baseURL string) (string, error) {
+	settingsURL := transport.SettingsURL(baseURL)
 	r.Info("No API key configured.")
 	r.Info("Opening " + settingsURL + " — create an API key there, then paste it below.")
-	if err := browser.Open(settingsURL); err != nil {
+	if err := transport.OpenSettings(cfg, baseURL); err != nil {
 		r.Info("(couldn't open a browser automatically — open the URL above manually)")
 	}
 
@@ -120,8 +119,8 @@ func bootstrapAPIKey(ctx context.Context, r *render.Renderer, baseURL string) (s
 			continue
 		}
 
-		if _, err := apiclient.New(baseURL, key).Workspaces(ctx); err != nil {
-			var apiErr *apiclient.APIError
+		if _, err := transport.New(baseURL, key).Workspaces(ctx); err != nil {
+			var apiErr *transport.APIError
 			if errors.As(err, &apiErr) && apiErr.IsAuth() {
 				r.Warn("that key was rejected — try again")
 				continue
@@ -135,7 +134,7 @@ func bootstrapAPIKey(ctx context.Context, r *render.Renderer, baseURL string) (s
 
 // pickWorkspace lists the user's workspaces and returns the chosen slug. With a
 // single workspace it auto-selects; with several it prompts.
-func pickWorkspace(ctx context.Context, client *apiclient.Client, r *render.Renderer) (string, error) {
+func pickWorkspace(ctx context.Context, client *transport.Client, r *render.Renderer) (string, error) {
 	wss, err := client.Workspaces(ctx)
 	if err != nil {
 		return "", err
@@ -211,7 +210,7 @@ func readLine(f *os.File, prompt string) (string, error) {
 
 // exitCodeFor maps an error to a process exit code.
 func exitCodeFor(err error) int {
-	var apiErr *apiclient.APIError
+	var apiErr *transport.APIError
 	if errors.As(err, &apiErr) && apiErr.IsAuth() {
 		return exitAuth
 	}

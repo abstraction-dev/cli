@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
+	"github.com/abstraction-dev/cli/internal/transport"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -73,7 +73,7 @@ func TestREPLFrame(t *testing.T) {
 	}
 
 	// Pickers: enter picker mode, arrow down, render, escape.
-	m.openChatPicker(chatPickerLoadedMsg{items: []apiclient.Chat{{Slug: "a", Title: "one"}, {Slug: "b", Title: "two"}}})
+	m.openChatPicker(chatPickerLoadedMsg{items: []transport.Chat{{Slug: "a", Title: "one"}, {Slug: "b", Title: "two"}}})
 	mm, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.chatIdx != 1 {
 		t.Fatalf("picker down: idx=%d", m.chatIdx)

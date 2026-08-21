@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/config"
 	"github.com/abstraction-dev/cli/internal/render"
+	"github.com/abstraction-dev/cli/internal/transport"
 )
 
 // runWorkspace manages the current workspace: pick (default), list, or use.
@@ -37,10 +37,10 @@ func runWorkspace(ctx context.Context, args []string) int {
 
 	key := cfg.APIKeyResolved()
 	if key == "" {
-		r.Errorf("not logged in — run `abstr login`")
+		r.Error("not logged in — run `abstr login`")
 		return exitAuth
 	}
-	client := apiclient.New(baseURL, key)
+	client := transport.New(baseURL, key)
 
 	action := "pick"
 	if len(sub) > 0 {
@@ -74,7 +74,7 @@ func runWorkspace(ctx context.Context, args []string) int {
 
 	case "use":
 		if len(sub) < 2 {
-			r.Errorf("usage: abstr workspace use <slug|name>")
+			r.Error("usage: abstr workspace use <slug|name>")
 			return exitUsage
 		}
 		// Join the remaining tokens so an unquoted multi-word name (e.g.
@@ -90,11 +90,11 @@ func runWorkspace(ctx context.Context, args []string) int {
 				return saveWorkspace(cfg, r, w.Slug)
 			}
 		}
-		r.Errorf("no workspace matching %q", target)
+		r.Error(fmt.Sprintf("no workspace matching %q", target))
 		return exitRuntime
 
 	default:
-		r.Errorf("unknown workspace command: %s", action)
+		r.Error("unknown workspace command: " + action)
 		return exitUsage
 	}
 }

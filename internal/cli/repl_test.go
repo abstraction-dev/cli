@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
+	"github.com/abstraction-dev/cli/internal/transport"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -65,7 +65,7 @@ func TestHistoryNavigationEmpty(t *testing.T) {
 }
 
 func TestMatchPRReview(t *testing.T) {
-	reviews := []apiclient.PRReview{
+	reviews := []transport.PRReview{
 		{PRNumber: 12, PRURL: "https://github.com/acme/web/pull/12", Status: "COMPLETED"},
 		{PRNumber: 34, PRURL: "https://github.com/acme/api/pull/34", Status: "IN_PROGRESS"},
 	}
@@ -99,11 +99,11 @@ func TestMatchPRReview(t *testing.T) {
 }
 
 func TestPRReviewReady(t *testing.T) {
-	if !(apiclient.PRReview{Status: "COMPLETED"}).Ready() {
+	if !(transport.PRReview{Status: "COMPLETED"}).Ready() {
 		t.Fatal("COMPLETED should be ready")
 	}
 	for _, s := range []string{"PENDING", "IN_PROGRESS", "FAILED", "CANCELLED", ""} {
-		if (apiclient.PRReview{Status: s}).Ready() {
+		if (transport.PRReview{Status: s}).Ready() {
 			t.Fatalf("status %q should not be ready", s)
 		}
 	}
@@ -123,17 +123,17 @@ func TestPRStatusLabel(t *testing.T) {
 }
 
 // exchange is one stored exchange as GET /api/chats/{slug} delivers it.
-func exchange(raw string) apiclient.ChatMessage {
-	return apiclient.ChatMessage{Messages: []byte(raw)}
+func exchange(raw string) transport.ChatMessage {
+	return transport.ChatMessage{Messages: []byte(raw)}
 }
 
 func TestResumeConversationReplaysTranscript(t *testing.T) {
 	m := &replModel{input: textarea.New(), sessionID: "fresh-uuid"}
 	m.entries = []transcriptEntry{{entrySystem, "banner"}}
 
-	m.resumeConversation(apiclient.ChatWithMessages{
-		Chat: apiclient.Chat{Slug: "chat-1", Title: "Where is auth handled", Type: "DEFAULT"},
-		Messages: []apiclient.ChatMessage{
+	m.resumeConversation(transport.ChatWithMessages{
+		Chat: transport.Chat{Slug: "chat-1", Title: "Where is auth handled", Type: "DEFAULT"},
+		Messages: []transport.ChatMessage{
 			exchange(`[{"role":"user","content":[{"type":"text","text":"where is auth handled"}]},
 			           {"role":"assistant","content":[{"type":"text","text":"In internal/auth."}]}]`),
 			exchange(`[{"role":"user","content":[{"type":"text","text":"and the api keys"}]},
@@ -178,8 +178,8 @@ func TestResumeConversationReplaysTranscript(t *testing.T) {
 func TestResumeConversationRestoresPRScope(t *testing.T) {
 	m := &replModel{input: textarea.New()}
 
-	m.resumeConversation(apiclient.ChatWithMessages{
-		Chat: apiclient.Chat{Slug: "chat-2", Title: "Review", Type: apiclient.ChatTypePR, DiffReportID: "42", PRNumber: "123"},
+	m.resumeConversation(transport.ChatWithMessages{
+		Chat: transport.Chat{Slug: "chat-2", Title: "Review", Type: transport.ChatTypePR, DiffReportID: "42", PRNumber: "123"},
 	})
 
 	if m.activePR != "42" {
@@ -194,9 +194,9 @@ func TestResumeConversationRestoresPRScope(t *testing.T) {
 func TestResumeConversationReportsUnreadableExchange(t *testing.T) {
 	m := &replModel{input: textarea.New()}
 
-	m.resumeConversation(apiclient.ChatWithMessages{
-		Chat: apiclient.Chat{Slug: "chat-3", Title: "Broken"},
-		Messages: []apiclient.ChatMessage{
+	m.resumeConversation(transport.ChatWithMessages{
+		Chat: transport.Chat{Slug: "chat-3", Title: "Broken"},
+		Messages: []transport.ChatMessage{
 			exchange(`not json`),
 			exchange(`[{"role":"user","content":[{"type":"text","text":"still here"}]}]`),
 		},
@@ -252,7 +252,7 @@ func TestConversationMsgIsAdopted(t *testing.T) {
 // The picker opens on the conversation being held, so the list says where you are.
 func TestOpenChatPickerPreselectsActiveConversation(t *testing.T) {
 	m := &replModel{input: textarea.New(), sessionID: "chat-2"}
-	items := []apiclient.Chat{{Slug: "chat-1"}, {Slug: "chat-2"}, {Slug: "chat-3"}}
+	items := []transport.Chat{{Slug: "chat-1"}, {Slug: "chat-2"}, {Slug: "chat-3"}}
 
 	m.openChatPicker(chatPickerLoadedMsg{items: items})
 
@@ -294,13 +294,13 @@ func TestOpenChatPickerEmptyAndError(t *testing.T) {
 func TestChatLabel(t *testing.T) {
 	cases := []struct {
 		name string
-		chat apiclient.Chat
+		chat transport.Chat
 		want string
 	}{
-		{"title", apiclient.Chat{Slug: "0123456789ab", Title: "Where is auth handled"}, "Where is auth handled"},
-		{"untitled falls back to the slug", apiclient.Chat{Slug: "0123456789ab"}, "01234567…"},
-		{"pr chat is labelled by its pull request", apiclient.Chat{Title: "Review", Type: apiclient.ChatTypePR, PRNumber: "123"}, "#123 · Review"},
-		{"pr chat without a number", apiclient.Chat{Title: "Review", Type: apiclient.ChatTypePR}, "Review"},
+		{"title", transport.Chat{Slug: "0123456789ab", Title: "Where is auth handled"}, "Where is auth handled"},
+		{"untitled falls back to the slug", transport.Chat{Slug: "0123456789ab"}, "01234567…"},
+		{"pr chat is labelled by its pull request", transport.Chat{Title: "Review", Type: transport.ChatTypePR, PRNumber: "123"}, "#123 · Review"},
+		{"pr chat without a number", transport.Chat{Title: "Review", Type: transport.ChatTypePR}, "Review"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,10 +312,10 @@ func TestChatLabel(t *testing.T) {
 }
 
 func TestChatWhen(t *testing.T) {
-	if when := chatWhen(apiclient.Chat{CreatedAt: "2026-07-20T10:11:12Z"}); when == "" {
+	if when := chatWhen(transport.Chat{CreatedAt: "2026-07-20T10:11:12Z"}); when == "" {
 		t.Fatal("expected a formatted timestamp")
 	}
-	if got := chatWhen(apiclient.Chat{CreatedAt: "not a time"}); got != "" {
+	if got := chatWhen(transport.Chat{CreatedAt: "not a time"}); got != "" {
 		t.Fatalf("expected an unparseable timestamp to be left out, got %q", got)
 	}
 }

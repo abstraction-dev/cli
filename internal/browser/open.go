@@ -4,6 +4,8 @@ package browser
 import (
 	"os/exec"
 	"runtime"
+
+	"github.com/abstraction-dev/cli/internal/config"
 )
 
 // Open launches url in the default browser. It returns an error when no
@@ -23,4 +25,14 @@ func Open(url string) error {
 	}
 
 	return exec.Command(name, args...).Start()
+}
+
+// OpenWithConfig launches url using the browser command from configuration
+// when one is set, falling back to the platform default. A configured command
+// is invoked as `<command> <url>`.
+func OpenWithConfig(cfg *config.Config, url string) error {
+	if cmd := cfg.BrowserCommandResolved(); cmd != "" {
+		return exec.Command(cmd, url).Start()
+	}
+	return Open(url)
 }

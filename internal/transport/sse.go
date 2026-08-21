@@ -1,4 +1,4 @@
-package apiclient
+package transport
 
 // sseReader is a lightweight Server-Sent Events reader. It is a copy of
 // llmkit/internal/sse/reader.go (that package is internal to the llmkit module

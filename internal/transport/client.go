@@ -1,6 +1,6 @@
-// Package apiclient is the HTTP + SSE client for the Abstraction backend's CLI
+// Package transport is the HTTP + SSE client for the Abstraction backend's CLI
 // endpoints.
-package apiclient
+package transport
 
 import (
 	"bytes"

@@ -9,8 +9,9 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
+	"github.com/abstraction-dev/cli/internal/history"
 	"github.com/abstraction-dev/cli/internal/render"
+	"github.com/abstraction-dev/cli/internal/transport"
 )
 
 type queryMode int
@@ -59,11 +60,6 @@ func runAsk(ctx context.Context, args []string) int {
 		return exitCodeFor(err)
 	}
 
-	// Check for a newer release concurrently with the task; the notice or
-	// auto-upgrade is emitted once the task completes.
-	uc := startUpdateCheck(ctx, env.cfg)
-	defer finish(ctx, uc)
-
 	if mode == modeInteractive {
 		return runREPL(env, opts.pr)
 	}
@@ -110,7 +106,7 @@ func readPipedStdin() (bool, string) {
 // mode is a one-shot: buffered output is what pipes/scripts want, and on a TTY it
 // renders the full answer as markdown. Streaming lives in the interactive REPL.
 func runImmediate(ctx context.Context, env *appEnv, query, pr string) int {
-	req := apiclient.AskRequest{Workspace: env.workspace, Question: query, PR: pr}
+	req := transport.AskRequest{Workspace: env.workspace, Question: query, PR: pr}
 
 	// A one-shot never continues, so the conversation the reply names is not kept.
 	res, err := env.client.AskBuffered(ctx, req)
@@ -118,6 +114,7 @@ func runImmediate(ctx context.Context, env *appEnv, query, pr string) int {
 		return reportRunError(ctx, env, err)
 	}
 	ans := res.Answer
+	recordHistory(env, query, ans)
 
 	// Render markdown to ANSI on a terminal; keep raw markdown when piped so the
 	// output stays clean for downstream tools.
@@ -132,11 +129,28 @@ func runImmediate(ctx context.Context, env *appEnv, query, pr string) int {
 	return exitOK
 }
 
+// recordHistory stores a completed exchange, best-effort: history is a
+// convenience, so a write failure must not fail the answer the user already has.
+func recordHistory(env *appEnv, question, answer string) {
+	store, err := openHistory(env.cfg)
+	if err != nil {
+		return
+	}
+
+	if err := store.Append(history.Entry{
+		Workspace: env.workspace,
+		Question:  question,
+		Answer:    answer,
+	}); err != nil {
+		env.render.Status("could not save history: " + err.Error())
+	}
+}
+
 func reportRunError(ctx context.Context, env *appEnv, err error) int {
 	if ctx.Err() != nil {
-		env.render.Errorf("cancelled")
+		env.render.Error("cancelled")
 		return exitInterrupt
 	}
-	env.render.Errorf("abstr: %s", err.Error())
+	env.render.Error("abstr: " + err.Error())
 	return exitCodeFor(err)
 }

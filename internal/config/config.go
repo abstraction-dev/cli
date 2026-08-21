@@ -12,12 +12,16 @@ import (
 // DefaultBaseURL is the production API host used when nothing overrides it.
 const DefaultBaseURL = "https://app.abstraction.dev"
 
+// DefaultHistoryLimit is how many exchanges local history keeps by default.
+const DefaultHistoryLimit = 50
+
 const (
 	fileName      = ".abstr.json"
 	envAPIKey     = "ABSTR_API_KEY"
 	envWorkspace  = "ABSTR_WORKSPACE"
 	envBaseURL    = "ABSTR_API_URL"
 	envConfigPath = "ABSTR_CONFIG"
+	envBrowser    = "ABSTR_BROWSER"
 )
 
 // Config is the on-disk CLI configuration.
@@ -26,13 +30,12 @@ type Config struct {
 	Workspace  string `json:"workspace,omitempty"`
 	APIBaseURL string `json:"api_base_url,omitempty"`
 
-	// AutoUpgrade, when true, applies a newer release automatically instead of
-	// only printing a notice. See internal/selfupdate.
-	AutoUpgrade bool `json:"auto_upgrade,omitempty"`
-	// LastUpdateCheck is when the background update check last ran (RFC3339).
-	LastUpdateCheck string `json:"last_update_check,omitempty"`
-	// LatestSeen is the newest release tag the last check observed (e.g. v1.3.0).
-	LatestSeen string `json:"latest_seen,omitempty"`
+	// BrowserCommand overrides how URLs are opened (e.g. "firefox"). Empty
+	// means the platform default launcher.
+	BrowserCommand string `json:"browser_command,omitempty"`
+	// HistoryLimit caps how many exchanges the local history file keeps. Zero
+	// means DefaultHistoryLimit.
+	HistoryLimit int `json:"history_limit,omitempty"`
 
 	path string // where this was loaded from / will be saved to
 }
@@ -117,4 +120,22 @@ func (c *Config) BaseURLResolved() string {
 		return c.APIBaseURL
 	}
 	return DefaultBaseURL
+}
+
+// BrowserCommandResolved returns the effective browser command: $ABSTR_BROWSER
+// over the file. Empty means use the platform default launcher.
+func (c *Config) BrowserCommandResolved() string {
+	if v := os.Getenv(envBrowser); v != "" {
+		return v
+	}
+	return c.BrowserCommand
+}
+
+// HistoryLimitResolved returns the effective history cap, falling back to
+// DefaultHistoryLimit. A negative limit disables history entirely.
+func (c *Config) HistoryLimitResolved() int {
+	if c.HistoryLimit == 0 {
+		return DefaultHistoryLimit
+	}
+	return c.HistoryLimit
 }
