@@ -39,7 +39,8 @@ func runConfig(args []string) int {
 		fmt.Printf("workspace:    %s\n", cfg.Workspace)
 		fmt.Printf("api_key:      %s\n", redactKey(cfg.APIKey))
 		fmt.Printf("api_url:      %s\n", cfg.BaseURLResolved())
-		fmt.Printf("auto_upgrade: %t\n", cfg.AutoUpgrade)
+		fmt.Printf("browser_cmd:  %s\n", cfg.BrowserCommandResolved())
+		fmt.Printf("history_limit: %d\n", cfg.HistoryLimitResolved())
 	case "set":
 		return runConfigSet(cfg, sub[1:])
 	default:
@@ -60,14 +61,17 @@ func runConfigSet(cfg *config.Config, args []string) int {
 
 	var canonical string // the normalized value we actually stored
 	switch key {
-	case "auto_upgrade":
-		b, err := strconv.ParseBool(value)
+	case "browser_command":
+		cfg.BrowserCommand = value
+		canonical = value
+	case "history_limit":
+		n, err := strconv.Atoi(value)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "auto_upgrade must be true or false")
+			fmt.Fprintln(os.Stderr, "history_limit must be an integer")
 			return exitUsage
 		}
-		cfg.AutoUpgrade = b
-		canonical = strconv.FormatBool(b)
+		cfg.HistoryLimit = n
+		canonical = strconv.Itoa(n)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown config key: "+key)
 		return exitUsage

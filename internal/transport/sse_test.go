@@ -1,4 +1,4 @@
-package apiclient
+package transport
 
 import (
 	"errors"

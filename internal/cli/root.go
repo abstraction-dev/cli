@@ -24,8 +24,8 @@ func Main(args []string) int {
 			return runWorkspace(ctx, args[1:])
 		case "config":
 			return runConfig(args[1:])
-		case "upgrade", "update":
-			return runUpgrade(ctx, args[1:])
+		case "history":
+			return runHistory(args[1:])
 		case "help", "-h", "--help":
 			printUsage(os.Stdout)
 			return exitOK
@@ -47,8 +47,8 @@ Usage:
   abstr login                         Store your API key and pick a workspace.
   abstr workspace [list|use <slug>]   Manage the current workspace.
   abstr config [path|show]            Inspect CLI configuration.
-  abstr config set auto_upgrade <b>   Toggle automatic upgrades (true|false).
-  abstr upgrade [--check]             Update abstr to the latest release.
+  abstr config set <key> <value>      Set browser_command or history_limit.
+  abstr history [list|clear]          Inspect locally stored exchanges.
 
 Flags:
   -w, -workspace <slug>   Workspace to query (a UUID slug).

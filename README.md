@@ -53,22 +53,20 @@ Interactive commands: `/pr <url|number>`, `/pr clear`, `/workspace [slug]`,
 | `abstr workspace use <slug\|name>` | Switch the current workspace. |
 | `abstr workspace` | Interactive workspace picker. |
 | `abstr config path` / `abstr config show` | Inspect configuration. |
-| `abstr config set auto_upgrade <true\|false>` | Toggle automatic upgrades. |
-| `abstr upgrade` / `abstr upgrade --check` | Update to the latest release (or just check). |
+| `abstr config set <key> <value>` | Set `browser_command` or `history_limit`. |
+| `abstr history` / `abstr history -n 50` | List locally stored exchanges. |
+| `abstr history path` / `abstr history clear` | Locate or delete the history file. |
 
-### Staying up to date
+### Local history
 
-`abstr upgrade` downloads the latest release, verifies it against the published
-`sha256sums.txt`, and atomically replaces the running binary in place. Installs
-owned by a package manager (Homebrew, Nix) are left untouched — upgrade those
-with the manager instead. Self-upgrade is supported on macOS and Linux; on
-Windows, download the latest release manually (or use WSL).
+Buffered asks are appended to `~/.abstr-history.json` (override with
+`$ABSTR_HISTORY`), newest entries kept up to `history_limit` (default 50). Set
+`history_limit` to a negative value to turn recording off. The file holds the
+question and the answer text only, is written with `0600` perms, and is never
+sent anywhere — conversations themselves stay server-side and ephemeral.
 
-On a normal interactive run, `abstr` also checks for a newer release in the
-background (at most once every 24h). By default it just prints a one-line notice;
-enable `auto_upgrade` to have it apply updates automatically. The check is
-skipped for local dev builds, under `$CI`, when output isn't a terminal, or when
-`ABSTR_NO_UPDATE_CHECK` is set.
+Updating is handled by your installer: re-run the install script, or use the
+package manager that owns the binary.
 
 ### Configuration & precedence
 
@@ -80,6 +78,9 @@ Effective values resolve as **flag > env > file > default**:
 | Workspace | `-w`/`--workspace` | `ABSTR_WORKSPACE` | `workspace` |
 | API key | — | `ABSTR_API_KEY` | `api_key` |
 | Base URL | `--api-url` | `ABSTR_API_URL` | `api_base_url` |
+| Browser command | — | `ABSTR_BROWSER` | `browser_command` |
+| History limit | — | — | `history_limit` |
+| History file | — | `ABSTR_HISTORY` | — |
 
 Output is pipe-friendly: only the answer is written to stdout; prompts, status,
 and errors go to stderr. Color auto-disables when stdout is not a terminal.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
+	"github.com/abstraction-dev/cli/internal/transport"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -132,7 +132,7 @@ func tickCmd() tea.Cmd {
 type (
 	nameResolvedMsg struct{ name string }
 	pickerLoadedMsg struct {
-		items []apiclient.Workspace
+		items []transport.Workspace
 		err   error
 	}
 	switchResultMsg struct {
@@ -140,7 +140,7 @@ type (
 		err        error
 	}
 	prPickerLoadedMsg struct {
-		items []apiclient.PRReview
+		items []transport.PRReview
 		err   error
 	}
 	prSetResultMsg struct {
@@ -149,11 +149,11 @@ type (
 		err   error
 	}
 	chatPickerLoadedMsg struct {
-		items []apiclient.Chat
+		items []transport.Chat
 		err   error
 	}
 	chatLoadedMsg struct {
-		chat apiclient.ChatWithMessages
+		chat transport.ChatWithMessages
 		err  error
 	}
 )
@@ -226,11 +226,11 @@ type replModel struct {
 	turnStarted time.Time
 
 	mode        replMode
-	pickerItems []apiclient.Workspace
+	pickerItems []transport.Workspace
 	pickerIdx   int
-	prItems     []apiclient.PRReview
+	prItems     []transport.PRReview
 	prIdx       int
-	chatItems   []apiclient.Chat
+	chatItems   []transport.Chat
 	chatIdx     int
 }
 
@@ -595,7 +595,7 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	m.input.Blur()
 	m.refresh()
 
-	req := apiclient.AskRequest{
+	req := transport.AskRequest{
 		Workspace: m.env.workspace,
 		Question:  query,
 		PR:        m.activePR,
@@ -604,7 +604,7 @@ func (m *replModel) startTurn(query string) tea.Cmd {
 	sub := m.sub
 	client := m.env.client
 	go func() {
-		err := client.AskStream(ctx, req, apiclient.StreamHandlers{
+		err := client.AskStream(ctx, req, transport.StreamHandlers{
 			OnOutput:       func(t string) { sub <- deltaMsg(t) },
 			OnStatus:       func(s string) { sub <- statusMsg(s) },
 			OnConversation: func(slug string) { sub <- conversationMsg(slug) },
@@ -657,7 +657,7 @@ func (m *replModel) newConversation() {
 // which is the same conversation the app shows. A PR conversation also restores its
 // scope, so the status bar says what the answers are grounded in and starting a new
 // conversation keeps that grounding.
-func (m *replModel) resumeConversation(loaded apiclient.ChatWithMessages) {
+func (m *replModel) resumeConversation(loaded transport.ChatWithMessages) {
 	m.sessionID = loaded.Chat.Slug
 	m.activePR = loaded.Chat.DiffReportID
 	m.entries = nil
@@ -674,12 +674,12 @@ func (m *replModel) resumeConversation(loaded apiclient.ChatWithMessages) {
 		}
 		for _, turn := range turns {
 			switch turn.Role {
-			case apiclient.TurnUser:
+			case transport.TurnUser:
 				m.entries = append(m.entries, transcriptEntry{entryUser, turn.Text})
 				// Past questions join this run's input history, so ↑ recalls them the
 				// way it recalls the ones typed here.
 				m.history = append(m.history, turn.Text)
-			case apiclient.TurnAssistant:
+			case transport.TurnAssistant:
 				m.entries = append(m.entries, transcriptEntry{entryAnswer, turn.Text})
 			}
 		}
@@ -844,7 +844,7 @@ func (m *replModel) loadChatPickerCmd() tea.Cmd {
 
 // loadChatCmd fetches the chosen conversation's stored history, which the transcript
 // is rebuilt from.
-func (m *replModel) loadChatCmd(chat apiclient.Chat) tea.Cmd {
+func (m *replModel) loadChatCmd(chat transport.Chat) tea.Cmd {
 	client := m.env.client
 	return func() tea.Msg {
 		loaded, err := client.GetChat(context.Background(), chat.Slug)
@@ -890,7 +890,7 @@ func isPRURL(s string) bool {
 // matchPRReview finds the review a pasted PR URL points at — first by
 // normalised URL equality (so http/https and trailing-slash variants resolve),
 // then by the PR number in its /pull/<n> path as a fallback.
-func matchPRReview(reviews []apiclient.PRReview, url string) *apiclient.PRReview {
+func matchPRReview(reviews []transport.PRReview, url string) *transport.PRReview {
 	norm := normalizePRURL(url)
 	for i := range reviews {
 		if normalizePRURL(reviews[i].PRURL) == norm {
@@ -904,7 +904,7 @@ func matchPRReview(reviews []apiclient.PRReview, url string) *apiclient.PRReview
 	return nil
 }
 
-func prByNumber(reviews []apiclient.PRReview, n int) *apiclient.PRReview {
+func prByNumber(reviews []transport.PRReview, n int) *transport.PRReview {
 	for i := range reviews {
 		if reviews[i].PRNumber == n {
 			return &reviews[i]
@@ -923,7 +923,7 @@ func normalizePRURL(u string) string {
 }
 
 // prLabel is the transcript label for a selected PR, e.g. "#123 · Fix the bug".
-func prLabel(pr apiclient.PRReview) string {
+func prLabel(pr transport.PRReview) string {
 	if pr.PRTitle == "" {
 		return fmt.Sprintf("#%d", pr.PRNumber)
 	}
@@ -1214,7 +1214,7 @@ func (m *replModel) refreshChatPicker() {
 // chatLabel names a conversation in the picker: its title, prefixed with the pull
 // request it is scoped to. A conversation the backend hasn't summarized yet may have
 // no title, so its slug stands in — it is still resumable.
-func chatLabel(chat apiclient.Chat) string {
+func chatLabel(chat transport.Chat) string {
 	title := strings.TrimSpace(chat.Title)
 	if title == "" {
 		title = shortSlug(chat.Slug)
@@ -1227,7 +1227,7 @@ func chatLabel(chat apiclient.Chat) string {
 
 // chatWhen renders when a conversation started, in local time. An unparseable
 // timestamp is left out rather than guessed at.
-func chatWhen(chat apiclient.Chat) string {
+func chatWhen(chat transport.Chat) string {
 	started, err := time.Parse(time.RFC3339, chat.CreatedAt)
 	if err != nil {
 		return ""

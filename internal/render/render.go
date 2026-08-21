@@ -134,6 +134,7 @@ const (
 	ansiCyan   = "\033[36m"
 	ansiRed    = "\033[31m"
 	ansiYellow = "\033[33m"
+	ansiGreen  = "\033[32m"
 )
 
 // Renderer writes agent output to Out and everything else (prompts, status,
@@ -180,10 +181,8 @@ func (r *Renderer) Warn(s string) { fmt.Fprintln(r.Err, r.paint(ansiYellow, s)) 
 // Error prints a plain (non-format) error line to stderr.
 func (r *Renderer) Error(s string) { fmt.Fprintln(r.Err, r.paint(ansiRed, s)) }
 
-// Errorf prints a formatted error line to stderr.
-func (r *Renderer) Errorf(format string, a ...any) {
-	fmt.Fprintln(r.Err, r.paint(ansiRed, fmt.Sprintf(format, a...)))
-}
+// Success prints a confirmation line to stderr (green).
+func (r *Renderer) Success(s string) { fmt.Fprintln(r.Err, r.paint(ansiGreen, s)) }
 
 // Prompt returns the interactive REPL prompt string, colored when enabled.
 func (r *Renderer) Prompt(label string) string { return r.paint(ansiBold+ansiCyan, label) }

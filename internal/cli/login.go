@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/config"
+	"github.com/abstraction-dev/cli/internal/transport"
 )
 
 // runLogin stores an API key (browser + paste) and picks a workspace.
@@ -34,14 +34,14 @@ func runLogin(ctx context.Context, args []string) int {
 	}
 	r := newRenderer()
 
-	key, err := bootstrapAPIKey(ctx, r, baseURL)
+	key, err := bootstrapAPIKey(ctx, cfg, r, baseURL)
 	if err != nil {
 		r.Error(err.Error())
 		return exitAuth
 	}
 	cfg.APIKey = key
 
-	ws, err := pickWorkspace(ctx, apiclient.New(baseURL, key), r)
+	ws, err := pickWorkspace(ctx, transport.New(baseURL, key), r)
 	if err != nil {
 		r.Error(err.Error())
 		return exitRuntime
