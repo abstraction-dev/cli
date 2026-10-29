@@ -104,7 +104,8 @@ func (c *Client) StartReview(ctx context.Context, workspace string, start StartR
 	}
 	req.Header.Set("Content-Type", "application/json")
 	var out StartedReview
-	return out, c.do(req, &out)
+	err = c.do(req, &out)
+	return out, err
 }
 
 // BranchReviews lists the caller's open pre-reviews in the workspace. A

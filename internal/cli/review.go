@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
@@ -90,12 +91,16 @@ func runReview(ctx context.Context, args []string) int {
 }
 
 // parseInterspersed parses flags placed before, between or after the
-// positional arguments, which it returns.
+// positional arguments, which it returns; everything after "--" is
+// positional.
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
 			return nil, err
+		}
+		if parsed := len(args) - fs.NArg(); parsed > 0 && args[parsed-1] == "--" {
+			return append(positional, fs.Args()...), nil
 		}
 		if fs.NArg() == 0 {
 			return positional, nil
@@ -144,7 +149,7 @@ func git(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-var githubRemoteRe = regexp.MustCompile(`^(?:[a-z+]+://)?(?:[^@/]+@)?github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$`)
+var githubRemoteRe = regexp.MustCompile(`(?i)^(?:[a-z+]+://)?(?:[^@/]+@)?github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$`)
 
 // githubRepository reads owner/name from a GitHub remote URL, in its HTTPS
 // or SSH form.
@@ -225,9 +230,9 @@ func printFindings(w io.Writer, finished apiclient.ReviewFinished, open []apicli
 		if title == "" {
 			title = issue.Description
 		}
-		fmt.Fprintf(w, "\n  [%s] %s\n    %s\n", cmp.Or(issue.Severity, issue.Category), location, title)
+		fmt.Fprintf(w, "\n  [%s] %s\n    %s\n", plain(cmp.Or(issue.Severity, issue.Category)), plain(location), indent(title))
 		if issue.Title != "" && issue.Description != "" {
-			fmt.Fprintf(w, "    %s\n", issue.Description)
+			fmt.Fprintf(w, "    %s\n", indent(issue.Description))
 		}
 	}
 }
@@ -249,7 +254,7 @@ func newProgressView(w io.Writer, tty bool, width int) *progressView {
 
 func (v *progressView) update(progress apiclient.ReviewProgress) {
 	if !v.tty {
-		line := fmt.Sprintf("%3d%% %s", int(progress.Fraction*100), progress.Headline)
+		line := fmt.Sprintf("%3d%% %s", int(progress.Fraction*100), plain(progress.Headline))
 		if line != v.last {
 			fmt.Fprintln(v.w, line)
 			v.last = line
@@ -257,7 +262,7 @@ func (v *progressView) update(progress apiclient.ReviewProgress) {
 		return
 	}
 
-	lines := []string{fmt.Sprintf("%s  %d%%", progress.Headline, int(progress.Fraction*100))}
+	lines := []string{fmt.Sprintf("%s  %d%%", plain(progress.Headline), int(progress.Fraction*100))}
 	for _, step := range progress.Steps {
 		lines = append(lines, "  "+stepLine(step))
 		for _, substep := range step.Substeps {
@@ -286,12 +291,34 @@ var stepIcons = map[string]string{
 // stepLine is a step's state, name, and its count of work, or else its
 // detail. A count of one job says nothing and is left out.
 func stepLine(step apiclient.ReviewStep) string {
-	line := cmp.Or(stepIcons[step.State], "·") + " " + step.Name
+	line := cmp.Or(stepIcons[step.State], "·") + " " + plain(step.Name)
 	if step.Done != nil && step.Total != nil && *step.Total > 1 {
 		return line + fmt.Sprintf(" (%d/%d)", *step.Done, *step.Total)
 	}
 	if step.Detail != "" {
-		line += " · " + step.Detail
+		line += " · " + plain(step.Detail)
 	}
 	return line
+}
+
+// plain is server text made safe for one terminal line: escape sequences and
+// control characters dropped, newlines folded to spaces.
+func plain(s string) string {
+	return strings.Join(strings.Fields(strings.Join(strings.Split(sanitize(s), "\n"), " ")), " ")
+}
+
+// indent is server text made safe for the terminal, its lines indented under
+// a finding.
+func indent(s string) string {
+	return strings.ReplaceAll(strings.TrimSpace(sanitize(s)), "\n", "\n    ")
+}
+
+// sanitize drops escape sequences and every control character but newlines.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, ansi.Strip(s))
 }

@@ -840,7 +840,13 @@ func (m *replModel) loadPRPickerCmd() tea.Cmd {
 // loads is offered; an error is reported only when neither has anything.
 func reviewsToScope(client *apiclient.Client, ws string) ([]apiclient.PRReview, error) {
 	branches, branchErr := client.BranchReviews(context.Background(), ws)
+	if branchErr != nil {
+		branches = nil
+	}
 	prs, prErr := client.PRReviews(context.Background(), ws)
+	if prErr != nil {
+		prs = nil
+	}
 	items := append(branches, prs...)
 	if len(items) == 0 {
 		return nil, cmp.Or(prErr, branchErr)
@@ -875,7 +881,7 @@ func (m *replModel) setPRCmd(target string) tea.Cmd {
 	client, ws := m.env.client, m.env.workspace
 	return func() tea.Msg {
 		var pr *apiclient.PRReview
-		if isPRURL(target) && strings.Contains(target, "github.com/") {
+		if isPRURL(target) && strings.Contains(strings.ToLower(target), "github.com/") {
 			reviews, err := client.PRReviews(context.Background(), ws)
 			if err != nil {
 				return prSetResultMsg{err: err}
