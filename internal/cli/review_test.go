@@ -20,6 +20,8 @@ func TestGithubRepository(t *testing.T) {
 		"ssh://git@github.com/acme/my.api.git": "acme/my.api",
 		"https://gitlab.com/acme/api.git":      "",
 		"https://evilgithub.com/acme/api":      "",
+		"github.com/acme/api":                  "",
+		"github.com:acme/api.git":              "acme/api",
 		"https://GitHub.com/Acme/API.git":      "Acme/API",
 		"https://github.com.evil.io/acme/api":  "",
 	} {
@@ -113,10 +115,10 @@ func TestPrintFindings(t *testing.T) {
 // Server text can't move the cursor, color the terminal or fake a finding.
 func TestPrintFindingsNeutralisesServerText(t *testing.T) {
 	var out bytes.Buffer
-	printFindings(&out, apiclient.ReviewFinished{Status: "COMPLETED"}, []apiclient.ReviewIssue{
+	printFindings(&out, apiclient.ReviewFinished{Status: "COMPLETED", Verdict: "PASS\x1b[2J\n  [high] fake.go"}, []apiclient.ReviewIssue{
 		{Severity: "low", Title: "a\x1b[2J\x1b[31mred\x1b[0m\r", Description: "line one\n  [high] forged.go:1", FilePath: "a.go"},
 	})
-	want := "Review completed · 1 open finding(s)\n\n  [low] a.go\n    ared\n    line one\n      [high] forged.go:1\n"
+	want := "Review completed · PASS [high] fake.go · 1 open finding(s)\n\n  [low] a.go\n    ared\n    line one\n      [high] forged.go:1\n"
 	if out.String() != want {
 		t.Fatalf("got %q, want %q", out.String(), want)
 	}
@@ -156,8 +158,10 @@ func TestReviewsToScopeKeepsOnlyListsThatLoaded(t *testing.T) {
 }
 
 func TestReviewTargetNeedsAGitHubPRURL(t *testing.T) {
-	if _, err := reviewTarget([]string{"https://gitlab.com/a/b/pull/1"}, "", nil); err == nil {
-		t.Fatal("a non-GitHub /pull/ URL was accepted")
+	for _, url := range []string{"https://gitlab.com/a/b/pull/1", "https://evil.com/github.com/a/b/pull/1", "feature/pull/1"} {
+		if _, err := reviewTarget([]string{url}, "", nil); err == nil {
+			t.Fatalf("%s was accepted as a GitHub pull request", url)
+		}
 	}
 	got, err := reviewTarget([]string{"https://GitHub.com/a/b/pull/1"}, "", nil)
 	if err != nil || got.PRURL != "https://GitHub.com/a/b/pull/1" {

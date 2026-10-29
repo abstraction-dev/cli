@@ -149,10 +149,10 @@ func git(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-var githubRemoteRe = regexp.MustCompile(`(?i)^(?:[a-z+]+://)?(?:[^@/]+@)?github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$`)
+var githubRemoteRe = regexp.MustCompile(`(?i)^(?:[a-z+]+://(?:[^@/]+@)?github\.com/|(?:[^@/:]+@)?github\.com:)([^/]+)/([^/]+?)(?:\.git)?/?$`)
 
 // githubRepository reads owner/name from a GitHub remote URL, in its HTTPS
-// or SSH form.
+// or SSH form; a bare path is a local remote, not GitHub.
 func githubRepository(remote string) (string, bool) {
 	m := githubRemoteRe.FindStringSubmatch(strings.TrimSpace(remote))
 	if m == nil {
@@ -213,13 +213,13 @@ func writeNDJSON(w io.Writer, event string, data json.RawMessage) {
 
 // printFindings prints how the review ended and the findings it raises.
 func printFindings(w io.Writer, finished apiclient.ReviewFinished, open []apiclient.ReviewIssue) {
-	summary := "Review " + prStatusLabel(finished.Status)
+	summary := "Review " + plain(prStatusLabel(finished.Status))
 	if finished.Verdict != "" {
-		summary += " · " + finished.Verdict
+		summary += " · " + plain(finished.Verdict)
 	}
 	fmt.Fprintf(w, "%s · %d open finding(s)\n", summary, len(open))
 	if finished.URL != "" {
-		fmt.Fprintln(w, finished.URL)
+		fmt.Fprintln(w, plain(finished.URL))
 	}
 	for _, issue := range open {
 		location := issue.FilePath

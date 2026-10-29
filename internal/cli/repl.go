@@ -924,10 +924,12 @@ func isPRURL(s string) bool {
 	return prURLNumberRe.FindStringIndex(s) != nil
 }
 
+var githubPRURLRe = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?github\.com/[^/]+/[^/]+/pulls?/\d+(?:[/?#].*)?$`)
+
 // isGitHubPRURL reports whether s is a pull request URL on github.com, as
 // opposed to a branch or other name that happens to contain /pull/<n>.
 func isGitHubPRURL(s string) bool {
-	return isPRURL(s) && strings.Contains(strings.ToLower(s), "github.com/")
+	return githubPRURLRe.MatchString(strings.TrimSpace(s))
 }
 
 // matchPRReview finds the review a pasted PR URL points at — first by
