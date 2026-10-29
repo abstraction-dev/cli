@@ -20,6 +20,8 @@ func Main(args []string) int {
 		switch args[0] {
 		case "login":
 			return runLogin(ctx, args[1:])
+		case "review":
+			return runReview(ctx, args[1:])
 		case "workspace", "ws":
 			return runWorkspace(ctx, args[1:])
 		case "config":
@@ -44,6 +46,9 @@ func printUsage(w io.Writer) {
 Usage:
   abstr [flags] [question]            Ask a question. With no question on a TTY, opens an interactive session.
   echo "question" | abstr             Ask via piped stdin.
+  abstr review [pr-url]                Review the current branch (pushed to GitHub), or a pull request,
+                                      showing live progress and then the findings.
+  abstr review --follow <id>          Reattach to a running review.
   abstr login                         Store your API key and pick a workspace.
   abstr workspace [list|use <slug>]   Manage the current workspace.
   abstr config [path|show]            Inspect CLI configuration.
@@ -57,7 +62,15 @@ Flags:
   -config <path>          Config file (default ~/.abstr.json).
   -h                      Show this help.
 
-Interactive commands: /chats, /pr [url], /pr clear, /workspace [slug], /new, /help, /exit
+Review flags:
+  -base <branch>          Branch a pre-review compares against (default: the repository's default branch).
+  -no-wait                Start the review and return without following it.
+  -json                   Emit progress, the outcome and the findings as NDJSON.
+
+A branch without a pull request is pre-reviewed: only you see it and nothing is posted to GitHub.
+Ctrl-C while following detaches; the review keeps running.
+
+Interactive commands: /chats, /pr [url|branch], /pr clear, /workspace [slug], /new, /help, /exit
 Interactive keys:     ctrl+r resume a conversation, ctrl+c cancel, ctrl+d quit
 
 Conversations are shared with the web app: /chats (or ctrl+r) lists this workspace's

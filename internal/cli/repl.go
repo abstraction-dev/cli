@@ -483,10 +483,10 @@ func (m *replModel) handlePRPickerKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.mode = modeNormal
 		m.input.Focus()
 		if !pr.Ready() {
-			m.addEntry(entrySystem, fmt.Sprintf("PR #%d is not ready yet (%s) — pick a completed review", pr.PRNumber, prStatusLabel(pr.Status)))
+			m.addEntry(entrySystem, fmt.Sprintf("%s is not ready yet (%s) — pick a completed review", prLabel(pr), prStatusLabel(pr.Status)))
 			return m, nil
 		}
-		m.applyPRScope(pr.PRURL, prLabel(pr))
+		m.applyPRScope(pr.Scope(), prLabel(pr))
 	case "esc", "ctrl+c":
 		m.mode = modeNormal
 		m.input.Focus()
@@ -829,9 +829,20 @@ func (m *replModel) switchWorkspaceCmd(target string) tea.Cmd {
 func (m *replModel) loadPRPickerCmd() tea.Cmd {
 	client, ws := m.env.client, m.env.workspace
 	return func() tea.Msg {
-		items, err := client.PRReviews(context.Background(), ws)
+		items, err := reviewsToScope(client, ws)
 		return prPickerLoadedMsg{items: items, err: err}
 	}
+}
+
+// reviewsToScope lists what an ask can be scoped to: the caller's branch
+// pre-reviews, then the workspace's pull request reviews.
+func reviewsToScope(client *apiclient.Client, ws string) ([]apiclient.PRReview, error) {
+	branches, err := client.BranchReviews(context.Background(), ws)
+	if err != nil {
+		return nil, err
+	}
+	prs, err := client.PRReviews(context.Background(), ws)
+	return append(branches, prs...), err
 }
 
 func (m *replModel) loadChatPickerCmd() tea.Cmd {
@@ -852,29 +863,46 @@ func (m *replModel) loadChatCmd(chat apiclient.Chat) tea.Cmd {
 	}
 }
 
-// setPRCmd resolves a pasted GitHub PR URL against the workspace's reviews and
-// only scopes to it when the review is ready (completed). A URL with no
-// matching or not-yet-ready review is reported, not set. Bare PR numbers are
+// setPRCmd resolves a pasted GitHub PR URL against the workspace's reviews,
+// or a branch name against the caller's pre-reviews, and only scopes to it
+// when the review is ready (completed). A target with no matching or
+// not-yet-ready review is reported, not set. Bare PR numbers are
 // intentionally not accepted here — use the picker (`/pr` with no argument).
-func (m *replModel) setPRCmd(url string) tea.Cmd {
+func (m *replModel) setPRCmd(target string) tea.Cmd {
 	client, ws := m.env.client, m.env.workspace
 	return func() tea.Msg {
-		if !isPRURL(url) {
-			return prSetResultMsg{err: fmt.Errorf("%q is not a pull request URL — paste a GitHub PR URL, or run /pr to pick from the list", url)}
+		var pr *apiclient.PRReview
+		if isPRURL(target) {
+			reviews, err := client.PRReviews(context.Background(), ws)
+			if err != nil {
+				return prSetResultMsg{err: err}
+			}
+			pr = matchPRReview(reviews, target)
+		} else {
+			reviews, err := client.BranchReviews(context.Background(), ws)
+			if err != nil {
+				return prSetResultMsg{err: err}
+			}
+			pr = matchBranchReview(reviews, target)
 		}
-		reviews, err := client.PRReviews(context.Background(), ws)
-		if err != nil {
-			return prSetResultMsg{err: err}
-		}
-		pr := matchPRReview(reviews, url)
 		if pr == nil {
-			return prSetResultMsg{err: fmt.Errorf("no pull request matching %q in this workspace", url)}
+			return prSetResultMsg{err: fmt.Errorf("no pull request or pre-reviewed branch matching %q in this workspace — paste a GitHub PR URL or a branch name, or run /pr to pick from the list", target)}
 		}
 		if !pr.Ready() {
-			return prSetResultMsg{err: fmt.Errorf("PR #%d is not ready yet (%s) — its review must be completed before scoping to it", pr.PRNumber, prStatusLabel(pr.Status))}
+			return prSetResultMsg{err: fmt.Errorf("%s is not ready yet (%s) — its review must be completed before scoping to it", prLabel(*pr), prStatusLabel(pr.Status))}
 		}
-		return prSetResultMsg{pr: pr.PRURL, label: prLabel(*pr)}
+		return prSetResultMsg{pr: pr.Scope(), label: prLabel(*pr)}
 	}
+}
+
+// matchBranchReview finds the pre-review of a branch by its name.
+func matchBranchReview(reviews []apiclient.PRReview, branch string) *apiclient.PRReview {
+	for i := range reviews {
+		if reviews[i].IsBranch() && reviews[i].PRHeadRef == branch {
+			return &reviews[i]
+		}
+	}
+	return nil
 }
 
 // --- PR URL matching ---
@@ -924,6 +952,9 @@ func normalizePRURL(u string) string {
 
 // prLabel is the transcript label for a selected PR, e.g. "#123 · Fix the bug".
 func prLabel(pr apiclient.PRReview) string {
+	if pr.IsBranch() {
+		return pr.PRHeadRef + " → " + pr.PRBaseRef
+	}
 	if pr.PRTitle == "" {
 		return fmt.Sprintf("#%d", pr.PRNumber)
 	}
@@ -1172,11 +1203,13 @@ func (m *replModel) refreshPicker() {
 
 func (m *replModel) refreshPRPicker() {
 	var b strings.Builder
-	b.WriteString(labelStyle.Render("Select a pull request") + "\n\n")
+	b.WriteString(labelStyle.Render("Select a pull request or pre-reviewed branch") + "\n\n")
 	for i, pr := range m.prItems {
 		num := fmt.Sprintf("#%-5d", pr.PRNumber)
 		title := pr.PRTitle
-		if title == "" {
+		if pr.IsBranch() {
+			num, title = "branch", prLabel(pr)
+		} else if title == "" {
 			title = pr.PRURL
 		}
 		status := faintStyle.Render("  " + prStatusLabel(pr.Status))
@@ -1296,7 +1329,7 @@ func (m *replModel) content() string {
 const replHelp = `commands:
   /chats             resume an earlier conversation (also ctrl+r)
   /pr                open the pull request picker
-  /pr <url>          scope to a pull request URL (must be a completed review)
+  /pr <url|branch>   scope to a pull request URL or a pre-reviewed branch (must be a completed review)
   /pr clear          remove the PR scope
   /workspace [slug]  switch workspace (no arg = picker; validates access)
   /new               start a fresh conversation

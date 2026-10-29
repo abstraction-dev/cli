@@ -68,10 +68,27 @@ type PRReview struct {
 	Status string `json:"status"`
 	// Verdict is PASS / PARTIAL / FAIL once the review has one; empty otherwise.
 	Verdict string `json:"verdict"`
+	// ReportType is ReportTypeBranch for a pre-review, which has no PR yet and
+	// is named by its head and base branches.
+	ReportType string `json:"reportType"`
+	PRHeadRef  string `json:"prHeadRef"`
+	PRBaseRef  string `json:"prBaseRef"`
 }
 
 // Ready reports whether the review has finished and can be scoped against.
 func (r PRReview) Ready() bool { return r.Status == PRStatusCompleted }
+
+// IsBranch reports whether the review is a pre-review of a branch.
+func (r PRReview) IsBranch() bool { return r.ReportType == ReportTypeBranch }
+
+// Scope is the AskRequest.PR value that scopes an ask to the review: its PR's
+// URL, or for a pre-review its id.
+func (r PRReview) Scope() string {
+	if r.IsBranch() {
+		return r.ID
+	}
+	return r.PRURL
+}
 
 type listPRReviewsResponse struct {
 	Reviews []PRReview `json:"reviews"`
