@@ -17,6 +17,8 @@ import (
 
 	"github.com/abstraction-dev/cli/internal/apiclient"
 	"github.com/abstraction-dev/cli/internal/render"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // runReview reviews the working directory's current branch, or the pull
@@ -66,6 +68,10 @@ func runReview(ctx context.Context, args []string) int {
 		started, err := env.client.StartReview(ctx, env.workspace, start)
 		if err != nil {
 			return reportRunError(ctx, env, err)
+		}
+		if asJSON {
+			data, _ := json.Marshal(started)
+			writeNDJSON(os.Stdout, "started", data)
 		}
 		if started.ReportID == "" {
 			env.render.Info("The review starts once the new head is indexed; run abstr review again in a few minutes.")
@@ -138,7 +144,7 @@ func git(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-var githubRemoteRe = regexp.MustCompile(`github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$`)
+var githubRemoteRe = regexp.MustCompile(`^(?:[a-z+]+://)?(?:[^@/]+@)?github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$`)
 
 // githubRepository reads owner/name from a GitHub remote URL, in its HTTPS
 // or SSH form.
@@ -153,7 +159,7 @@ func githubRepository(remote string) (string, bool) {
 // followReview shows the review's progress until it finishes, then its
 // verdict and open findings. An interrupt detaches and leaves it running.
 func followReview(ctx context.Context, env *appEnv, reportID string, asJSON bool) int {
-	view := newProgressView(os.Stderr, render.IsTerminal(os.Stderr))
+	view := newProgressView(os.Stderr, render.IsTerminal(os.Stderr), render.TermWidth(os.Stderr))
 	onProgress := view.update
 	if asJSON {
 		onProgress = func(progress apiclient.ReviewProgress) { writeNDJSON(os.Stdout, "progress", progress.Raw) }
@@ -227,16 +233,18 @@ func printFindings(w io.Writer, finished apiclient.ReviewFinished, open []apicli
 }
 
 // progressView draws a review's progress: on a terminal its step list,
-// redrawn in place; elsewhere one line per change.
+// redrawn in place and cut to the terminal's width so no line wraps;
+// elsewhere one line per change.
 type progressView struct {
 	w     io.Writer
 	tty   bool
+	width int
 	drawn int
 	last  string
 }
 
-func newProgressView(w io.Writer, tty bool) *progressView {
-	return &progressView{w: w, tty: tty}
+func newProgressView(w io.Writer, tty bool, width int) *progressView {
+	return &progressView{w: w, tty: tty, width: width}
 }
 
 func (v *progressView) update(progress apiclient.ReviewProgress) {
@@ -254,6 +262,11 @@ func (v *progressView) update(progress apiclient.ReviewProgress) {
 		lines = append(lines, "  "+stepLine(step))
 		for _, substep := range step.Substeps {
 			lines = append(lines, "      "+stepLine(substep))
+		}
+	}
+	if v.width > 0 {
+		for i, line := range lines {
+			lines[i] = ansi.Truncate(line, v.width-1, "…")
 		}
 	}
 	if v.drawn > 0 {

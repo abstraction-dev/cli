@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -835,14 +836,16 @@ func (m *replModel) loadPRPickerCmd() tea.Cmd {
 }
 
 // reviewsToScope lists what an ask can be scoped to: the caller's branch
-// pre-reviews, then the workspace's pull request reviews.
+// pre-reviews, then the workspace's pull request reviews. Either list that
+// loads is offered; an error is reported only when neither has anything.
 func reviewsToScope(client *apiclient.Client, ws string) ([]apiclient.PRReview, error) {
-	branches, err := client.BranchReviews(context.Background(), ws)
-	if err != nil {
-		return nil, err
+	branches, branchErr := client.BranchReviews(context.Background(), ws)
+	prs, prErr := client.PRReviews(context.Background(), ws)
+	items := append(branches, prs...)
+	if len(items) == 0 {
+		return nil, cmp.Or(prErr, branchErr)
 	}
-	prs, err := client.PRReviews(context.Background(), ws)
-	return append(branches, prs...), err
+	return items, nil
 }
 
 func (m *replModel) loadChatPickerCmd() tea.Cmd {
@@ -872,7 +875,7 @@ func (m *replModel) setPRCmd(target string) tea.Cmd {
 	client, ws := m.env.client, m.env.workspace
 	return func() tea.Msg {
 		var pr *apiclient.PRReview
-		if isPRURL(target) {
+		if isPRURL(target) && strings.Contains(target, "github.com/") {
 			reviews, err := client.PRReviews(context.Background(), ws)
 			if err != nil {
 				return prSetResultMsg{err: err}

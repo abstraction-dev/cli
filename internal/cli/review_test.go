@@ -17,6 +17,8 @@ func TestGithubRepository(t *testing.T) {
 		"https://github.com/acme/api.git":      "acme/api",
 		"ssh://git@github.com/acme/my.api.git": "acme/my.api",
 		"https://gitlab.com/acme/api.git":      "",
+		"https://evilgithub.com/acme/api":      "",
+		"https://github.com.evil.io/acme/api":  "",
 	} {
 		got, ok := githubRepository(remote)
 		if got != want || ok != (want != "") {
@@ -42,7 +44,7 @@ func step(name, state string, done, total int64) apiclient.ReviewStep {
 // Off a terminal each change is one line, and a repeat prints nothing.
 func TestProgressViewPrintsALinePerChange(t *testing.T) {
 	var out bytes.Buffer
-	view := newProgressView(&out, false)
+	view := newProgressView(&out, false, 0)
 	for _, progress := range []apiclient.ReviewProgress{
 		{Headline: "Queued · waiting for a worker"},
 		{Headline: "Queued · waiting for a worker"},
@@ -58,7 +60,7 @@ func TestProgressViewPrintsALinePerChange(t *testing.T) {
 // On a terminal the step list is redrawn over the previous one.
 func TestProgressViewRedrawsInPlace(t *testing.T) {
 	var out bytes.Buffer
-	view := newProgressView(&out, true)
+	view := newProgressView(&out, true, 0)
 	review := step("Review the changes", "running", 0, 1)
 	review.Detail = "Reviewing"
 	review.Substeps = []apiclient.ReviewStep{step("Reviewing functions", "running", 34, 77)}
@@ -74,6 +76,17 @@ func TestProgressViewRedrawsInPlace(t *testing.T) {
 	view.update(apiclient.ReviewProgress{Headline: "Review finished", Fraction: 1})
 	if !strings.HasPrefix(out.String(), "\x1b[4F\x1b[J") {
 		t.Fatalf("redraw %q, want it to move up over the 4 lines drawn", out.String())
+	}
+}
+
+// Lines are cut to the terminal's width, so the redraw moves up exactly the
+// rows it drew.
+func TestProgressViewCutsLinesToTheTerminal(t *testing.T) {
+	var out bytes.Buffer
+	view := newProgressView(&out, true, 12)
+	view.update(apiclient.ReviewProgress{Headline: "Reviewing a very long headline"})
+	if got := out.String(); got != "Reviewing …\n" {
+		t.Fatalf("got %q", got)
 	}
 }
 
