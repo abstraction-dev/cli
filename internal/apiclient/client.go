@@ -32,109 +32,34 @@ func New(baseURL, apiKey string) *Client {
 
 // Workspaces lists the authenticated user's workspaces.
 func (c *Client) Workspaces(ctx context.Context) ([]Workspace, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/workspaces", nil)
-	if err != nil {
-		return nil, err
-	}
-	c.auth(req)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errorFrom(resp)
-	}
-
 	var out listWorkspacesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out.Workspaces, nil
+	err := c.getJSON(ctx, c.BaseURL+"/api/workspaces", &out)
+	return out.Workspaces, err
 }
 
 // PRReviews lists the pull-request reviews (diff reports) for a workspace.
 func (c *Client) PRReviews(ctx context.Context, workspace string) ([]PRReview, error) {
-	u := c.BaseURL + "/api/workspaces/" + url.PathEscape(workspace) + "/pr-reviews"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.auth(req)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errorFrom(resp)
-	}
-
 	var out listPRReviewsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out.Reviews, nil
+	err := c.getJSON(ctx, c.workspaceURL(workspace, "/pr-reviews"), &out)
+	return out.Reviews, err
 }
 
 // ListChats lists the workspace's stored conversations, newest first. The backend
 // lists the ones a person browses — chats opened in the app and the ones the CLI
 // started — so both surfaces offer the same conversations.
 func (c *Client) ListChats(ctx context.Context, workspace string) ([]Chat, error) {
-	u := c.BaseURL + "/api/workspaces/" + url.PathEscape(workspace) + "/chats"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.auth(req)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errorFrom(resp)
-	}
-
 	var out listChatsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out.Chats, nil
+	err := c.getJSON(ctx, c.workspaceURL(workspace, "/chats"), &out)
+	return out.Chats, err
 }
 
 // GetChat loads one conversation with its full message history, oldest exchange
 // first. The slug identifies the conversation on its own, so no workspace is
 // needed.
 func (c *Client) GetChat(ctx context.Context, chatSlug string) (ChatWithMessages, error) {
-	u := c.BaseURL + "/api/chats/" + url.PathEscape(chatSlug)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return ChatWithMessages{}, err
-	}
-	c.auth(req)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return ChatWithMessages{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return ChatWithMessages{}, errorFrom(resp)
-	}
-
 	var out getChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ChatWithMessages{}, err
-	}
-	return out.Chat, nil
+	err := c.getJSON(ctx, c.BaseURL+"/api/chats/"+url.PathEscape(chatSlug), &out)
+	return out.Chat, err
 }
 
 // AskBuffered runs one ask and returns the whole formatted answer, plus the
@@ -225,6 +150,34 @@ func (c *Client) postAsk(ctx context.Context, req AskRequest) (*http.Response, e
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.auth(httpReq)
 	return c.HTTP.Do(httpReq)
+}
+
+// getJSON GETs u and decodes its JSON reply into out.
+func (c *Client) getJSON(ctx context.Context, u string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	return c.do(req, out)
+}
+
+// do sends an authenticated request and decodes its JSON reply into out.
+func (c *Client) do(req *http.Request, out any) error {
+	c.auth(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return errorFrom(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) workspaceURL(workspace, path string) string {
+	return c.BaseURL + "/api/workspaces/" + url.PathEscape(workspace) + path
 }
 
 func (c *Client) auth(req *http.Request) {
