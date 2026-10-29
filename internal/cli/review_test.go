@@ -154,3 +154,13 @@ func TestReviewsToScopeKeepsOnlyListsThatLoaded(t *testing.T) {
 		t.Fatalf("got %+v %v, want only the PR list", items, err)
 	}
 }
+
+func TestReviewTargetNeedsAGitHubPRURL(t *testing.T) {
+	if _, err := reviewTarget([]string{"https://gitlab.com/a/b/pull/1"}, "", nil); err == nil {
+		t.Fatal("a non-GitHub /pull/ URL was accepted")
+	}
+	got, err := reviewTarget([]string{"https://GitHub.com/a/b/pull/1"}, "", nil)
+	if err != nil || got.PRURL != "https://GitHub.com/a/b/pull/1" {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}

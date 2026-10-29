@@ -881,7 +881,7 @@ func (m *replModel) setPRCmd(target string) tea.Cmd {
 	client, ws := m.env.client, m.env.workspace
 	return func() tea.Msg {
 		var pr *apiclient.PRReview
-		if isPRURL(target) && strings.Contains(strings.ToLower(target), "github.com/") {
+		if isGitHubPRURL(target) {
 			reviews, err := client.PRReviews(context.Background(), ws)
 			if err != nil {
 				return prSetResultMsg{err: err}
@@ -922,6 +922,12 @@ var prURLNumberRe = regexp.MustCompile(`/pull/(\d+)`)
 // /pull/<n> segment). Bare PR numbers are deliberately rejected.
 func isPRURL(s string) bool {
 	return prURLNumberRe.FindStringIndex(s) != nil
+}
+
+// isGitHubPRURL reports whether s is a pull request URL on github.com, as
+// opposed to a branch or other name that happens to contain /pull/<n>.
+func isGitHubPRURL(s string) bool {
+	return isPRURL(s) && strings.Contains(strings.ToLower(s), "github.com/")
 }
 
 // matchPRReview finds the review a pasted PR URL points at — first by

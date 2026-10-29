@@ -114,7 +114,7 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 // warning when it has commits GitHub hasn't seen.
 func reviewTarget(targets []string, base string, r *render.Renderer) (apiclient.StartReviewRequest, error) {
 	if len(targets) == 1 {
-		if !isPRURL(targets[0]) {
+		if !isGitHubPRURL(targets[0]) {
 			return apiclient.StartReviewRequest{}, fmt.Errorf("%q is not a pull request URL (e.g. https://github.com/owner/repo/pull/123)", targets[0])
 		}
 		return apiclient.StartReviewRequest{PRURL: targets[0]}, nil
