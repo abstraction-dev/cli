@@ -153,7 +153,7 @@ func rulingError(err error, reportID, findingID string) error {
 	case http.StatusForbidden:
 		return errors.New("you need to be an editor or admin of the workspace")
 	case http.StatusNotFound:
-		return fmt.Errorf("review %s has no finding #%s", reportID, findingID)
+		return fmt.Errorf("review %s has no finding #%s; pass --report <id> if it is in another review", reportID, findingID)
 	}
 	return err
 }

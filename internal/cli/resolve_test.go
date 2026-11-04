@@ -82,7 +82,7 @@ func TestBranchReview(t *testing.T) {
 func TestRulingError(t *testing.T) {
 	for status, want := range map[int]string{
 		http.StatusForbidden:  "you need to be an editor or admin of the workspace",
-		http.StatusNotFound:   "review 41 has no finding #4211",
+		http.StatusNotFound:   "review 41 has no finding #4211; pass --report <id> if it is in another review",
 		http.StatusBadRequest: "a duplicate names the issue it duplicates (HTTP 400)",
 	} {
 		err := rulingError(&apiclient.APIError{Status: status, Message: "a duplicate names the issue it duplicates"}, "41", "4211")
