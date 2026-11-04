@@ -49,6 +49,8 @@ Usage:
   abstr review [pr-url]                Review the current branch (pushed to GitHub), or a pull request,
                                       showing live progress and then the findings.
   abstr review --follow <id>          Reattach to a running review.
+  abstr review resolve <finding-id> --as <verdict>
+                                      Rule on a finding: fixed, invalid, wont_fix, duplicate or open.
   abstr login                         Store your API key and pick a workspace.
   abstr workspace [list|use <slug>]   Manage the current workspace.
   abstr config [path|show]            Inspect CLI configuration.
@@ -66,6 +68,12 @@ Review flags:
   -base <branch>          Branch a pre-review compares against (default: the repository's default branch).
   -no-wait                Start the review and return without following it.
   -json                   Emit progress, the outcome and the findings as NDJSON.
+
+Resolve flags:
+  -as <verdict>           fixed, invalid, wont_fix, duplicate, or open to reopen.
+  -reason <text>          Why; required for invalid and wont_fix.
+  -duplicate-of <id>      The finding a duplicate repeats; only for duplicate.
+  -report <id>            Review the finding is in (default: the newest review of the current branch).
 
 A branch without a pull request is pre-reviewed: only you see it and nothing is posted to GitHub.
 Ctrl-C while following detaches; the review keeps running.

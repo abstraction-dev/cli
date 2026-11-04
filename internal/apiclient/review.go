@@ -69,6 +69,8 @@ type ReviewFinished struct {
 
 // ReviewIssue is one finding of a review.
 type ReviewIssue struct {
+	// CommentID names the finding, as the app and Astrid number it.
+	CommentID   string `json:"commentId"`
 	Severity    string `json:"severity"`
 	Title       string `json:"title"`
 	Category    string `json:"category"`
@@ -80,6 +82,10 @@ type ReviewIssue struct {
 	State     string `json:"state"`
 	PreReview bool   `json:"preReview"`
 	HiddenBy  string `json:"hiddenByInsightId"`
+	// Verdict is how the finding was last ruled on; "" reads as open.
+	Verdict       string `json:"verdict"`
+	VerdictBy     string `json:"verdictBy"`
+	VerdictReason string `json:"verdictReason"`
 }
 
 // Open reports whether the finding is one the review currently raises: still
@@ -90,6 +96,18 @@ func (i ReviewIssue) Open() bool {
 
 type getReviewResponse struct {
 	Issues []ReviewIssue `json:"issues"`
+}
+
+// Ruling is a verdict on one finding. DuplicateOf names the original of a
+// duplicate and is set only for one.
+type Ruling struct {
+	Verdict     string `json:"verdict"`
+	Reason      string `json:"reason,omitempty"`
+	DuplicateOf string `json:"originalCommentId,omitempty"`
+}
+
+type rulingResponse struct {
+	Issue *ReviewIssue `json:"issue"`
 }
 
 // StartReview starts a review in the workspace.
@@ -125,6 +143,25 @@ func (c *Client) ReviewIssues(ctx context.Context, workspace, reportID string) (
 	var out getReviewResponse
 	err := c.getJSON(ctx, c.workspaceURL(workspace, "/pr-reviews/"+url.PathEscape(reportID)), &out)
 	return out.Issues, err
+}
+
+// RuleOnFinding rules on a finding as the caller, as a click in the app
+// does, and returns the finding as the ruling left it, nil when the server
+// could not read it back.
+func (c *Client) RuleOnFinding(ctx context.Context, workspace, reportID, commentID string, ruling Ruling) (*ReviewIssue, error) {
+	body, err := json.Marshal(ruling)
+	if err != nil {
+		return nil, err
+	}
+	path := "/pr-reviews/" + url.PathEscape(reportID) + "/findings/" + url.PathEscape(commentID) + "/verdict"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workspaceURL(workspace, path), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var out rulingResponse
+	err = c.do(req, &out)
+	return out.Issue, err
 }
 
 // FollowReview delivers each snapshot of the review's progress to onProgress

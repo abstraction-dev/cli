@@ -3,6 +3,7 @@ package apiclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -97,5 +98,55 @@ func TestReviewIssueOpen(t *testing.T) {
 		if tc.issue.Open() != tc.open {
 			t.Errorf("%+v open = %v", tc.issue, !tc.open)
 		}
+	}
+}
+
+// A ruling posts to the finding's verdict route, and a duplicate's original
+// goes as originalCommentId.
+func TestRuleOnFinding(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.Method + " " + r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"issue":{"commentId":"4211","state":"ACTIVE","verdict":"duplicate","verdictBy":"octocat"}}`))
+	})
+
+	issue, err := client.RuleOnFinding(context.Background(), "ws", "41", "4211", Ruling{Verdict: "duplicate", DuplicateOf: "4200"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "POST /api/workspaces/ws/pr-reviews/41/findings/4211/verdict" || gotBody["verdict"] != "duplicate" || gotBody["originalCommentId"] != "4200" || gotBody["reason"] != nil {
+		t.Fatalf("request %s %v", gotPath, gotBody)
+	}
+	if issue == nil || issue.CommentID != "4211" || issue.Verdict != "duplicate" || issue.VerdictBy != "octocat" {
+		t.Fatalf("issue %+v", issue)
+	}
+}
+
+// A 400's JSON body reads as its message.
+func TestRuleOnFindingRefused(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"issue #4211 is from before the pull request opened: invalid ruling"}`))
+	})
+	_, err := client.RuleOnFinding(context.Background(), "ws", "41", "4211", Ruling{Verdict: "fixed"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Message != "issue #4211 is from before the pull request opened: invalid ruling" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPRReviewsSearch(t *testing.T) {
+	var gotQuery string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Write([]byte(`{"reviews":[]}`))
+	})
+	if _, err := client.PRReviews(context.Background(), "ws", "feat/x y"); err != nil || gotQuery != "q=feat%2Fx+y" {
+		t.Fatalf("query %q %v", gotQuery, err)
+	}
+	if _, err := client.PRReviews(context.Background(), "ws", ""); err != nil || gotQuery != "" {
+		t.Fatalf("query %q %v", gotQuery, err)
 	}
 }
