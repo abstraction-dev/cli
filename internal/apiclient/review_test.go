@@ -103,7 +103,7 @@ func TestReviewIssueOpen(t *testing.T) {
 
 // A ruling posts to the finding's verdict route, and a duplicate's original
 // goes as originalCommentId.
-func TestRuleOnFinding(t *testing.T) {
+func TestRuleOnIssue(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -112,25 +112,25 @@ func TestRuleOnFinding(t *testing.T) {
 		w.Write([]byte(`{"issue":{"commentId":"4211","state":"ACTIVE","verdict":"duplicate","verdictBy":"octocat"}}`))
 	})
 
-	issue, err := client.RuleOnFinding(context.Background(), "ws", "41", "4211", Ruling{Verdict: "duplicate", DuplicateOf: "4200"})
+	issue, err := client.RuleOnIssue(context.Background(), "ws", "41", "4211", Ruling{Verdict: "duplicate", DuplicateOf: "4200"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "POST /api/workspaces/ws/pr-reviews/41/findings/4211/verdict" || gotBody["verdict"] != "duplicate" || gotBody["originalCommentId"] != "4200" || gotBody["reason"] != nil {
 		t.Fatalf("request %s %v", gotPath, gotBody)
 	}
-	if issue == nil || issue.CommentID != "4211" || issue.Verdict != "duplicate" || issue.VerdictBy != "octocat" {
+	if issue == nil || issue.IssueID != "4211" || issue.Verdict != "duplicate" || issue.VerdictBy != "octocat" {
 		t.Fatalf("issue %+v", issue)
 	}
 }
 
 // A 400's JSON body reads as its message.
-func TestRuleOnFindingRefused(t *testing.T) {
+func TestRuleOnIssueRefused(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`{"error":"issue #4211 is from before the pull request opened: invalid ruling"}`))
 	})
-	_, err := client.RuleOnFinding(context.Background(), "ws", "41", "4211", Ruling{Verdict: "fixed"})
+	_, err := client.RuleOnIssue(context.Background(), "ws", "41", "4211", Ruling{Verdict: "fixed"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Message != "issue #4211 is from before the pull request opened: invalid ruling" {
 		t.Fatalf("got %v", err)
@@ -148,5 +148,20 @@ func TestPRReviewsSearch(t *testing.T) {
 	}
 	if _, err := client.PRReviews(context.Background(), "ws", ""); err != nil || gotQuery != "" {
 		t.Fatalf("query %q %v", gotQuery, err)
+	}
+}
+
+// The API's commentId reads into IssueID, which is written back out as
+// issueId, the name MCP uses.
+func TestReviewIssueID(t *testing.T) {
+	var issue ReviewIssue
+	if err := json.Unmarshal([]byte(`{"commentId":"4211","title":"nil deref"}`), &issue); err != nil || issue.IssueID != "4211" || issue.Title != "nil deref" {
+		t.Fatalf("got %+v %v", issue, err)
+	}
+	out, _ := json.Marshal(issue)
+	var fields map[string]any
+	json.Unmarshal(out, &fields)
+	if fields["issueId"] != "4211" || fields["commentId"] != nil {
+		t.Fatalf("got %s", out)
 	}
 }

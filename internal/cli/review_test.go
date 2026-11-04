@@ -104,7 +104,7 @@ func TestProgressViewCutsLinesToTheTerminal(t *testing.T) {
 func TestPrintFindings(t *testing.T) {
 	var out bytes.Buffer
 	printFindings(&out, apiclient.ReviewFinished{Status: "COMPLETED", Verdict: "FAIL", URL: "https://app/r/41"}, []apiclient.ReviewIssue{
-		{CommentID: "4211", Severity: "high", Title: "nil deref", Description: "Dereferences before the check.", FilePath: "a.go", StartLine: 3},
+		{IssueID: "4211", Severity: "high", Title: "nil deref", Description: "Dereferences before the check.", FilePath: "a.go", StartLine: 3},
 	})
 	want := "Review completed · FAIL · 1 open finding(s)\nhttps://app/r/41\n\n  #4211 [high] a.go:3\n    nil deref\n    Dereferences before the check.\n"
 	if out.String() != want {
@@ -116,7 +116,7 @@ func TestPrintFindings(t *testing.T) {
 func TestPrintFindingsNeutralisesServerText(t *testing.T) {
 	var out bytes.Buffer
 	printFindings(&out, apiclient.ReviewFinished{Status: "COMPLETED", Verdict: "PASS\x1b[2J\n  [high] fake.go"}, []apiclient.ReviewIssue{
-		{CommentID: "7", Severity: "low", Title: "a\x1b[2J\x1b[31mred\x1b[0m\r", Description: "line one\n  [high] forged.go:1", FilePath: "a.go"},
+		{IssueID: "7", Severity: "low", Title: "a\x1b[2J\x1b[31mred\x1b[0m\r", Description: "line one\n  [high] forged.go:1", FilePath: "a.go"},
 	})
 	want := "Review completed · PASS [high] fake.go · 1 open finding(s)\n\n  #7 [low] a.go\n    ared\n    line one\n      [high] forged.go:1\n"
 	if out.String() != want {

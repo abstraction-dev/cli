@@ -242,7 +242,7 @@ func printFindings(w io.Writer, finished apiclient.ReviewFinished, open []apicli
 		if title == "" {
 			title = issue.Description
 		}
-		fmt.Fprintf(w, "\n  #%s [%s] %s\n    %s\n", plain(issue.CommentID), plain(cmp.Or(issue.Severity, issue.Category)), plain(location), indent(title))
+		fmt.Fprintf(w, "\n  #%s [%s] %s\n    %s\n", plain(issue.IssueID), plain(cmp.Or(issue.Severity, issue.Category)), plain(location), indent(title))
 		if issue.Title != "" && issue.Description != "" {
 			fmt.Fprintf(w, "    %s\n", indent(issue.Description))
 		}
