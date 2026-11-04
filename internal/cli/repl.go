@@ -843,7 +843,7 @@ func reviewsToScope(client *apiclient.Client, ws string) ([]apiclient.PRReview, 
 	if branchErr != nil {
 		branches = nil
 	}
-	prs, prErr := client.PRReviews(context.Background(), ws)
+	prs, prErr := client.PRReviews(context.Background(), ws, "")
 	if prErr != nil {
 		prs = nil
 	}
@@ -882,7 +882,7 @@ func (m *replModel) setPRCmd(target string) tea.Cmd {
 	return func() tea.Msg {
 		var pr *apiclient.PRReview
 		if isGitHubPRURL(target) {
-			reviews, err := client.PRReviews(context.Background(), ws)
+			reviews, err := client.PRReviews(context.Background(), ws, "")
 			if err != nil {
 				return prSetResultMsg{err: err}
 			}

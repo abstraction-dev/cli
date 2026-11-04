@@ -69,6 +69,9 @@ type ReviewFinished struct {
 
 // ReviewIssue is one finding of a review.
 type ReviewIssue struct {
+	// IssueID names the issue, as the app, Astrid and MCP's issue_id do. The
+	// API sends it as commentId.
+	IssueID     string `json:"issueId"`
 	Severity    string `json:"severity"`
 	Title       string `json:"title"`
 	Category    string `json:"category"`
@@ -80,6 +83,25 @@ type ReviewIssue struct {
 	State     string `json:"state"`
 	PreReview bool   `json:"preReview"`
 	HiddenBy  string `json:"hiddenByInsightId"`
+	// Verdict is how the finding was last ruled on; "" reads as open.
+	Verdict       string `json:"verdict"`
+	VerdictBy     string `json:"verdictBy"`
+	VerdictReason string `json:"verdictReason"`
+}
+
+// UnmarshalJSON reads the API's commentId into IssueID.
+func (i *ReviewIssue) UnmarshalJSON(data []byte) error {
+	type fields ReviewIssue
+	var wire struct {
+		fields
+		CommentID string `json:"commentId"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*i = ReviewIssue(wire.fields)
+	i.IssueID = wire.CommentID
+	return nil
 }
 
 // Open reports whether the finding is one the review currently raises: still
@@ -90,6 +112,18 @@ func (i ReviewIssue) Open() bool {
 
 type getReviewResponse struct {
 	Issues []ReviewIssue `json:"issues"`
+}
+
+// Ruling is a verdict on one issue. DuplicateOf names the original of a
+// duplicate and is set only for one.
+type Ruling struct {
+	Verdict     string `json:"verdict"`
+	Reason      string `json:"reason,omitempty"`
+	DuplicateOf string `json:"originalCommentId,omitempty"`
+}
+
+type rulingResponse struct {
+	Issue *ReviewIssue `json:"issue"`
 }
 
 // StartReview starts a review in the workspace.
@@ -125,6 +159,25 @@ func (c *Client) ReviewIssues(ctx context.Context, workspace, reportID string) (
 	var out getReviewResponse
 	err := c.getJSON(ctx, c.workspaceURL(workspace, "/pr-reviews/"+url.PathEscape(reportID)), &out)
 	return out.Issues, err
+}
+
+// RuleOnIssue rules on an issue as the caller, as a click in the app
+// does, and returns the issue as the ruling left it, nil when the server
+// could not read it back.
+func (c *Client) RuleOnIssue(ctx context.Context, workspace, reportID, issueID string, ruling Ruling) (*ReviewIssue, error) {
+	body, err := json.Marshal(ruling)
+	if err != nil {
+		return nil, err
+	}
+	path := "/pr-reviews/" + url.PathEscape(reportID) + "/findings/" + url.PathEscape(issueID) + "/verdict"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workspaceURL(workspace, path), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var out rulingResponse
+	err = c.do(req, &out)
+	return out.Issue, err
 }
 
 // FollowReview delivers each snapshot of the review's progress to onProgress

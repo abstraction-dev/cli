@@ -25,6 +25,9 @@ import (
 // runReview reviews the working directory's current branch, or the pull
 // request named by URL, and follows the review until it finishes.
 func runReview(ctx context.Context, args []string) int {
+	if len(args) > 0 && args[0] == "resolve" {
+		return runResolve(ctx, args[1:])
+	}
 	fs := flag.NewFlagSet("abstr review", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { printUsage(os.Stderr) }
@@ -120,28 +123,37 @@ func reviewTarget(targets []string, base string, r *render.Renderer) (apiclient.
 		return apiclient.StartReviewRequest{PRURL: targets[0]}, nil
 	}
 
-	branch, err := git("rev-parse", "--abbrev-ref", "HEAD")
+	repository, branch, err := currentBranch()
 	if err != nil {
-		return apiclient.StartReviewRequest{}, fmt.Errorf("not in a git checkout: %w", err)
+		return apiclient.StartReviewRequest{}, err
 	}
-	if branch == "HEAD" {
-		return apiclient.StartReviewRequest{}, errors.New("HEAD is detached; check out the branch to review")
-	}
-	origin, err := git("remote", "get-url", "origin")
-	if err != nil {
-		return apiclient.StartReviewRequest{}, errors.New("the checkout has no origin remote")
-	}
-	repository, ok := githubRepository(origin)
-	if !ok {
-		return apiclient.StartReviewRequest{}, fmt.Errorf("origin %s is not a GitHub repository", origin)
-	}
-
 	if ahead, err := git("rev-list", "--count", "origin/"+branch+"..HEAD"); err != nil {
 		r.Warn("branch " + branch + " isn't on origin; the review reads GitHub, so push it first")
 	} else if n, _ := strconv.Atoi(ahead); n > 0 {
 		r.Warn(fmt.Sprintf("%d local commit(s) aren't pushed; the review reads GitHub and won't see them", n))
 	}
 	return apiclient.StartReviewRequest{Repository: repository, Branch: branch, BaseBranch: base}, nil
+}
+
+// currentBranch is the checkout's GitHub repository (owner/name) and the
+// branch checked out in it.
+func currentBranch() (repository, branch string, err error) {
+	branch, err = git("rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("not in a git checkout: %w", err)
+	}
+	if branch == "HEAD" {
+		return "", "", errors.New("HEAD is detached; check out the branch to review")
+	}
+	origin, err := git("remote", "get-url", "origin")
+	if err != nil {
+		return "", "", errors.New("the checkout has no origin remote")
+	}
+	repository, ok := githubRepository(origin)
+	if !ok {
+		return "", "", fmt.Errorf("origin %s is not a GitHub repository", origin)
+	}
+	return repository, branch, nil
 }
 
 func git(args ...string) (string, error) {
@@ -230,7 +242,7 @@ func printFindings(w io.Writer, finished apiclient.ReviewFinished, open []apicli
 		if title == "" {
 			title = issue.Description
 		}
-		fmt.Fprintf(w, "\n  [%s] %s\n    %s\n", plain(cmp.Or(issue.Severity, issue.Category)), plain(location), indent(title))
+		fmt.Fprintf(w, "\n  #%s [%s] %s\n    %s\n", plain(issue.IssueID), plain(cmp.Or(issue.Severity, issue.Category)), plain(location), indent(title))
 		if issue.Title != "" && issue.Description != "" {
 			fmt.Fprintf(w, "    %s\n", indent(issue.Description))
 		}

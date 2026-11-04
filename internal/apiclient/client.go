@@ -37,10 +37,16 @@ func (c *Client) Workspaces(ctx context.Context) ([]Workspace, error) {
 	return out.Workspaces, err
 }
 
-// PRReviews lists the pull-request reviews (diff reports) for a workspace.
-func (c *Client) PRReviews(ctx context.Context, workspace string) ([]PRReview, error) {
+// PRReviews lists the pull-request reviews (diff reports) for a workspace,
+// newest first; a non-empty search keeps those whose title, author or
+// branches contain it.
+func (c *Client) PRReviews(ctx context.Context, workspace, search string) ([]PRReview, error) {
+	u := c.workspaceURL(workspace, "/pr-reviews")
+	if search != "" {
+		u += "?" + url.Values{"q": {search}}.Encode()
+	}
 	var out listPRReviewsResponse
-	err := c.getJSON(ctx, c.workspaceURL(workspace, "/pr-reviews"), &out)
+	err := c.getJSON(ctx, u, &out)
 	return out.Reviews, err
 }
 
@@ -184,9 +190,17 @@ func (c *Client) auth(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 }
 
+// errorFrom reads a refusal's message, from its plain-text body or a JSON
+// {"error": "..."} one.
 func errorFrom(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	msg := strings.TrimSpace(string(body))
+	var wrapped struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &wrapped) == nil && wrapped.Error != "" {
+		msg = wrapped.Error
+	}
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
 	}
