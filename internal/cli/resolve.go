@@ -109,7 +109,8 @@ func checkRuling(target string, ruling *apiclient.Ruling) (string, error) {
 }
 
 // branchReview is the newest review of the branch in the workspace: its
-// pull request's, or the caller's pre-review of it.
+// pull request's, or the caller's pre-review of it. Pre-reviews name no
+// repository, so ones of the branch in several repositories are refused.
 func branchReview(ctx context.Context, client *apiclient.Client, workspace, repository, branch string) (string, error) {
 	prs, err := client.PRReviews(ctx, workspace, branch)
 	if err != nil {
@@ -121,9 +122,16 @@ func branchReview(ctx context.Context, client *apiclient.Client, workspace, repo
 	}
 	prPrefix := "github.com/" + strings.ToLower(repository) + "/pull/"
 	var newest int64
+	preReviewed := false
 	for _, review := range append(prs, pres...) {
 		if review.PRHeadRef != branch || (!review.IsBranch() && !strings.HasPrefix(normalizePRURL(review.PRURL), prPrefix)) {
 			continue
+		}
+		if review.IsBranch() {
+			if preReviewed {
+				return "", fmt.Errorf("you have pre-reviews of %s in several repositories; pass --report <id>", branch)
+			}
+			preReviewed = true
 		}
 		if id, _ := strconv.ParseInt(review.ID, 10, 64); id > newest {
 			newest = id

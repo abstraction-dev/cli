@@ -110,3 +110,22 @@ func TestPrintRuling(t *testing.T) {
 		t.Fatalf("got %q", out.String())
 	}
 }
+
+// Pre-reviews name no repository, so pre-reviews of the branch in two
+// repositories are left for --report to choose between.
+func TestBranchReviewAmbiguousPreReviews(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/workspaces/ws/pr-reviews":
+			w.Write([]byte(`{"reviews":[]}`))
+		case "/api/workspaces/ws/branch-reviews":
+			w.Write([]byte(`{"reviews":[{"id":"12","prHeadRef":"feature","reportType":"BRANCH"},{"id":"13","prHeadRef":"feature","reportType":"BRANCH"}]}`))
+		}
+	}))
+	defer server.Close()
+
+	got, err := branchReview(context.Background(), apiclient.New(server.URL, "k"), "ws", "acme/api", "feature")
+	if err == nil || !strings.Contains(err.Error(), "--report") {
+		t.Fatalf("got %q %v, want a pointer to --report", got, err)
+	}
+}
