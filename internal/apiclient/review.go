@@ -15,12 +15,15 @@ import (
 const ReportTypeBranch = "BRANCH"
 
 // StartReviewRequest names a review from a checkout: a pull request by its
-// URL, or a branch by its repository (owner/name).
+// URL, or a branch by its repository (owner/name). Title and Description state
+// a pre-review's intent as a pull request's would.
 type StartReviewRequest struct {
-	PRURL      string `json:"prUrl,omitempty"`
-	Repository string `json:"repository,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	BaseBranch string `json:"baseBranch,omitempty"`
+	PRURL       string `json:"prUrl,omitempty"`
+	Repository  string `json:"repository,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	BaseBranch  string `json:"baseBranch,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // StartedReview is the review a start launched. Deferred means it waits for

@@ -33,13 +33,16 @@ func runReview(ctx context.Context, args []string) int {
 	fs.Usage = func() { printUsage(os.Stderr) }
 
 	var opts runOptions
-	var base, follow string
+	var follow string
 	var noWait, asJSON bool
 	fs.StringVar(&opts.workspace, "w", "", "workspace slug")
 	fs.StringVar(&opts.workspace, "workspace", "", "workspace slug")
 	fs.StringVar(&opts.configPath, "config", "", "config file path")
 	fs.StringVar(&opts.apiURL, "api-url", "", "API base URL")
-	fs.StringVar(&base, "base", "", "branch a pre-review compares against")
+	var preReview apiclient.StartReviewRequest
+	fs.StringVar(&preReview.BaseBranch, "base", "", "branch a pre-review compares against")
+	fs.StringVar(&preReview.Title, "title", "", "pre-review title, read as a pull request's")
+	fs.StringVar(&preReview.Description, "description", "", "pre-review description, read as a pull request's")
 	fs.StringVar(&follow, "follow", "", "review id to follow")
 	fs.BoolVar(&noWait, "no-wait", false, "start the review and return")
 	fs.BoolVar(&asJSON, "json", false, "emit NDJSON")
@@ -64,7 +67,7 @@ func runReview(ctx context.Context, args []string) int {
 
 	reportID := follow
 	if reportID == "" {
-		start, err := reviewTarget(targets, base, env.render)
+		start, err := reviewTarget(targets, preReview, env.render)
 		if err != nil {
 			env.render.Errorf("abstr: %s", err.Error())
 			return exitUsage
@@ -113,12 +116,16 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// reviewTarget is the PR URL given, or else the checkout's current branch,
-// warning when it has commits GitHub hasn't seen.
-func reviewTarget(targets []string, base string, r *render.Renderer) (apiclient.StartReviewRequest, error) {
+// reviewTarget is the PR URL given, or else the checkout's current branch
+// pre-reviewed with preReview's base and intent, warning when it has commits
+// GitHub hasn't seen.
+func reviewTarget(targets []string, preReview apiclient.StartReviewRequest, r *render.Renderer) (apiclient.StartReviewRequest, error) {
 	if len(targets) == 1 {
 		if !isGitHubPRURL(targets[0]) {
 			return apiclient.StartReviewRequest{}, fmt.Errorf("%q is not a pull request URL (e.g. https://github.com/owner/repo/pull/123)", targets[0])
+		}
+		if preReview.Title != "" || preReview.Description != "" {
+			return apiclient.StartReviewRequest{}, errors.New("-title and -description are for a branch pre-review; a pull request is reviewed on its own")
 		}
 		return apiclient.StartReviewRequest{PRURL: targets[0]}, nil
 	}
@@ -132,7 +139,8 @@ func reviewTarget(targets []string, base string, r *render.Renderer) (apiclient.
 	} else if n, _ := strconv.Atoi(ahead); n > 0 {
 		r.Warn(fmt.Sprintf("%d local commit(s) aren't pushed; the review reads GitHub and won't see them", n))
 	}
-	return apiclient.StartReviewRequest{Repository: repository, Branch: branch, BaseBranch: base}, nil
+	preReview.Repository, preReview.Branch = repository, branch
+	return preReview, nil
 }
 
 // currentBranch is the checkout's GitHub repository (owner/name) and the
