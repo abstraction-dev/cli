@@ -66,6 +66,8 @@ Flags:
 
 Review flags:
   -base <branch>          Branch a pre-review compares against (default: the repository's default branch).
+  -title <text>           A pre-review's title, which the review reads as a pull request's.
+  -description <text>     A pre-review's description, read likewise; re-reviews keep both until given new ones.
   -no-wait                Start the review and return without following it.
   -json                   Emit progress, the outcome and the findings as NDJSON.
 

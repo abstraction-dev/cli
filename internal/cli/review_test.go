@@ -159,12 +159,22 @@ func TestReviewsToScopeKeepsOnlyListsThatLoaded(t *testing.T) {
 
 func TestReviewTargetNeedsAGitHubPRURL(t *testing.T) {
 	for _, url := range []string{"https://gitlab.com/a/b/pull/1", "https://evil.com/github.com/a/b/pull/1", "feature/pull/1"} {
-		if _, err := reviewTarget([]string{url}, "", nil); err == nil {
+		if _, err := reviewTarget([]string{url}, apiclient.StartReviewRequest{}, nil); err == nil {
 			t.Fatalf("%s was accepted as a GitHub pull request", url)
 		}
 	}
-	got, err := reviewTarget([]string{"https://GitHub.com/a/b/pull/1"}, "", nil)
+	got, err := reviewTarget([]string{"https://GitHub.com/a/b/pull/1"}, apiclient.StartReviewRequest{}, nil)
 	if err != nil || got.PRURL != "https://GitHub.com/a/b/pull/1" {
 		t.Fatalf("got %+v %v", got, err)
+	}
+}
+
+// A pull request is reviewed on its own title and description, so a review of
+// one refuses those of a pre-review rather than dropping them unsaid.
+func TestReviewTargetRefusesPreReviewIntentForAPullRequest(t *testing.T) {
+	for _, preReview := range []apiclient.StartReviewRequest{{Title: "Retry uploads"}, {Description: "Uploads retry on a 503."}} {
+		if got, err := reviewTarget([]string{"https://github.com/a/b/pull/1"}, preReview, nil); err == nil {
+			t.Fatalf("pull request review with %+v was accepted as %+v", preReview, got)
+		}
 	}
 }
